@@ -61,6 +61,7 @@ use crate::error::{EntityRef, Result, SolidError};
 use crate::geom::attribute::ObjectKey;
 use crate::geom::extent1d::Extent1d;
 use crate::geom::extent2d::Extent2d;
+use crate::geom::extent3d::Extent3d;
 use crate::geom::solution_array::{ObjectKind, SolutionObject};
 use crate::geom::tol::{USE_DEFAULT, ZONE_TOL_3D};
 use crate::geom::vector2d::Point2;
@@ -530,7 +531,7 @@ impl Default for Vertexuse {
 
 /// A boundary representation (`SmBrep`): arenas of shells, faces, loops, edges and
 /// vertices linked by typed ids.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Brep {
     shells: Arena<ShellId, Shell>,
     faces: Arena<FaceId, Face>,
@@ -547,6 +548,8 @@ pub struct Brep {
     validate_only: bool,
     /// `m_sThisZoneTol3d` (CO-PORTED by `topology.edgeuse_p2`): the B-rep's tolerance.
     tolerance: f64,
+    /// `m_pLockedBoundingBox` (unit `query.brep`): the explicitly locked box.
+    pub(crate) locked_bounding_box: Option<Extent3d>,
     /// The identity the B-rep is attributed and notified under (`SmBrep*`).
     key: ObjectKey,
     /// `SmOwningTopology::m_pList` of the B-rep (unit `topology.brep_p1`): the head of
@@ -575,6 +578,38 @@ pub struct Brep {
     deleted_surfaces: Vec<Surface>,
 }
 
+impl Clone for Brep {
+    fn clone(&self) -> Self {
+        Self {
+            shells: self.shells.clone(),
+            faces: self.faces.clone(),
+            loops: self.loops.clone(),
+            edges: self.edges.clone(),
+            vertices: self.vertices.clone(),
+            regions: self.regions.clone(),
+            infinite_region: self.infinite_region,
+            faceuses: self.faceuses.clone(),
+            loopuses: self.loopuses.clone(),
+            edgeuses: self.edgeuses.clone(),
+            vertexuses: self.vertexuses.clone(),
+            validate_only: self.validate_only,
+            tolerance: self.tolerance,
+            // SmBrep's copy constructor initializes m_pLockedBoundingBox to NULL
+            // (SmBrep.cpp:618), so edited copies calculate their own bounds.
+            locked_bounding_box: None,
+            key: self.key,
+            region_list_head: self.region_list_head,
+            face_list: self.face_list.clone(),
+            edge_list: self.edge_list.clone(),
+            vertex_list: self.vertex_list.clone(),
+            editing_enabled: self.editing_enabled,
+            model_size_estimate: self.model_size_estimate,
+            large_small_size_ratio: self.large_small_size_ratio,
+            deleted_surfaces: self.deleted_surfaces.clone(),
+        }
+    }
+}
+
 impl Default for Brep {
     fn default() -> Self {
         Self {
@@ -591,6 +626,7 @@ impl Default for Brep {
             vertexuses: Arena::default(),
             validate_only: false,
             tolerance: ZONE_TOL_3D,
+            locked_bounding_box: None,
             key: ObjectKey(0),
             region_list_head: None,
             face_list: Vec::new(),
