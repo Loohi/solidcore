@@ -1327,7 +1327,7 @@
     },
     {
       "deferred": {
-        "symbol": "SmBrep::CalculateBoundingBox",
+        "symbol": "SmBrep::RayFire (B-rep cache world)",
         "unit": "query.brep"
       },
       "max_rel_err": 0.0,
