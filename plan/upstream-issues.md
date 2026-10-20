@@ -205,11 +205,11 @@ meantime, whoever merges renumbers the new entry and every reference to it (here
 #### UB-13. `N_MakeKnotsCompatible` / `N_GetCompatibleKnotArrayMult` read past `U[m]`
 - **Location:** `NL_BasisBasic.cpp:3665` `N_MakeKnotsCompatible`, `NL_BasisAdv.cpp:119` `N_GetCompatibleKnotArrayMult`.
 - **What happens:** Both read past `U[m]` on several inputs. Their output buffers are caller-allocated and unbounded.
-- **Trigger:** Degree-0 vectors whose ends differ by less than `NL_PTOL`; inner knots within `NL_PTOL` of an end; unclamped vectors. For `N_GetCompatibleKnotArrayMult` also: degree 0 on vectors whose end knots repeat (`R[mr-1] == R[mr]` matched against `S[j]` advances both indices past the ends), an inner knot above the end knot, and an end knot replaced by a smaller value.
-- **How found:** read during porting; `N_GetCompatibleKnotArrayMult` also by `difftest --fuzz` (issue #182: 55 of 3000 fuzz cases, 501 of 30000, where the C++ ran on the shim's `+inf` padding and Rust reported the read).
-- **Confirmed:** no. For `N_GetCompatibleKnotArrayMult` the ffi now rejects exactly these inputs: the shim replays the routine's rescale (`N_BasisReparam` itself) and index walk and checks each index before the read (`sc_nlib_basis_adv_compat_mult_walk`), so upstream never runs on them. `N_MakeKnotsCompatible` still relies on the `+inf` padding.
+- **Trigger:** Degree-0 vectors whose ends differ by less than `NL_PTOL`; inner knots within `NL_PTOL` of an end; unclamped vectors. For `N_MakeKnotsCompatible` also: degree 0 on a vector whose end knots repeat (a degree-1 clamped vector passed with degree 0, or a duplicated end knot), an inner knot above the end knot (also after the rescale), and a vector with fewer than `p + 1` equal end knots. For `N_GetCompatibleKnotArrayMult` also: degree 0 on vectors whose end knots repeat (`R[mr-1] == R[mr]` matched against `S[j]` advances both indices past the ends), an inner knot above the end knot, and an end knot replaced by a smaller value.
+- **How found:** read during porting; `N_MakeKnotsCompatible` also by `difftest --fuzz` on `nlib.basis_basic` (17 of 3000 fuzz cases, 249 of 30000, where the C++ ran on the shim's `+inf` padding and Rust reported the read); `N_GetCompatibleKnotArrayMult` also by `difftest --fuzz` (issue #182: 55 of 3000 fuzz cases, 501 of 30000, same `+inf` padding).
+- **Confirmed:** no. The ffi now rejects exactly these inputs for both routines: the shim replays each routine's rescale (`N_BasisReparam` itself) and index walk and checks each index before the read, so upstream never runs on them. `N_GetCompatibleKnotArrayMult` is guarded by `sc_nlib_basis_adv_compat_mult_walk` and `N_MakeKnotsCompatible` by `sc_nlib_basis_basic_make_compatible_walk`; the `+inf` padding stays as a second line of defence.
 - **Severity:** crash/UB.
-- **Rust port:** Returns `InvalidInput` for the out-of-range reads. The `nlib.basis_adv` difftest compares this with the shim's walk check (`read_past_end` on both sides).
+- **Rust port:** Returns `InvalidInput` for the out-of-range reads. The `nlib.basis_adv` difftest compares this with the shim's walk check for `N_GetCompatibleKnotArrayMult`, and the `nlib.basis_basic` difftest for `N_MakeKnotsCompatible` (`read_past_end` on both sides; fixtures in `fixtures/nlib.basis_basic/fuzz_regressions.json`).
 
 #### UB-14. `NL_PascalTri[18][18]` is indexed past its end
 - **Location:** `source/SMLib/inc/NL_Globals.h:67` (the table); users include `NL_Bezier.cpp:105`, `:118` (elevation / product matrices) and `:5417` `N_BezCrvExtend` (hence `N_BezSrfExtend4D`).
@@ -3185,3 +3185,50 @@ meantime, whoever merges renumbers the new entry and every reference to it (here
 - **How found:** source comparison following the overseer's independent diagnostic of `upstream_piecewise_boxes_2` and `_3`, on two 10×10×10 boxes offset by 5 in X. This author did not debug or replay the crashing inputs.
 - **Confirmed:** the separate diagnostic on `sc-builder-4` at `8df5981c` observed SIGSEGV and the original other B-rep's destruction during the first `ManifoldBoolean(SM_BO_PARTIAL_MERGE)` call. The next surface used that freed B-rep. This entry records the source-level lifetime defect; the provided diagnostic is archived in the swarm status directory.
 - **Guard:** before native construction, the FFI and shim refuse family 4 when the other operand is a box (six surfaces), an options pointer is present, imprinting (`mask & 2`) is on, and keep-other (`mask & 16`) is off. A shell-vertex other operand has no surfaces and never enters the per-surface loop (`SmMerge.cpp:394-407,441,772-778`), so it stays accepted, including when the primary is a box. All other families, non-imprinting options, null options, and imprinting with keep-other remain accepted. The two original fixtures assert this specific refusal without executing C++; `mask | 16` variants keep the imprinting branch exercised. No kernel result is fabricated and no Rust dependency deferral is used to label the refusal.
+
+#### UB-185. Fillet executive initialized flag is indeterminate before parameter setup
+- **Unit:** `blend.fillet_executive_p3` (constructor owned by executive p1).
+- **Location:** `source/SMLib/src/SmFilletExecutive.cpp:487-516,1574`.
+- **Trigger:** Construct `SmFilletExecutive` and call `DoFillet` before parameter
+  setup. Its constructor never initializes `m_bIsInitialized`, but `DoFillet`
+  immediately reads that member for its precondition check.
+- **How found:** Source inspection while porting the three executive methods.
+- **Confirmed:** no; no uninitialized native read was executed.
+- **Guard:** The native fixture's derived executive explicitly writes
+  `m_bIsInitialized` for every case before invoking an operation. Rust requires
+  callers to supply an initialized `bool` in the executive state.
+
+#### UB-206. `SmFilletExecutive::SetFilletParameters` dereferences a null `pBrep` and a null `pOptVarRadLaws`
+- **Location:** `source/SMLib/src/SmFilletExecutive.cpp:917` (`pBrep->GetContext()`) and `:998` (`pOptVarRadLaws->GetSize()`), the edge-pointer overload at `:865`.
+- **What happens:** `pBrep` may be null (`:884` only skips the target assignment), but once the edge list is non-empty and the list sizes pass, `:917` reads its context. `pOptVarRadLaws` is optional (`NULL` default), yet the first variable-radius edge reads its size.
+- **Trigger:** a null B-rep with a non-empty edge list whose type and value lists have one entry or one per edge; or a variable-radius type with a null law list (with a valid cross-section type, so the edge loop is reached).
+- **How found:** read during porting (`blend.fillet_executive_p2`, PR #267).
+- **Confirmed:** no. The shim refuses exactly these inputs, following upstream's order of early returns.
+- **Severity:** crash/UB (null dereference).
+- **Rust port:** `SM_ERR_NULL_POINTER` at the same points; the difftest compares both as guard errors.
+
+#### UB-207. RETIRED 2026-10-20 (was: the elliptical `SmBSplineFilletLaw` keeps a null law curve after a failed interpolation)
+- **Reason:** no triggering input exists. The pre-review of PR #267 probed zero span with equal radii, zero radii, span pi and span 1000, among others, and both sides built the full degree-2 curve every time; the interpolation parameters are the distinct `i / 100`. The port still returns an interpolation error where upstream would keep a null curve.
+
+#### HANG-36. RETIRED 2026-10-20 (was: `CollectTangentEdgeSequence` never returns on a tangent cycle without its first solver)
+- **Reason:** the trigger can't occur. The four `GetTangentFilletSolver` overrides (`SmFilletCorner.cpp:4448`, `:4573`, `:5141`, `:6869`) pair a corner's two solvers symmetrically, or return the solver itself for a closed edge, so every walk ends at NULL or back at `pFS`. A foreign corner makes `GetOtherFilletCorner` (`SmFilletSolver.cpp:235`) return NULL, but the walk only ever passes a corner the solver owns, so that NULL is not reached either. The port keeps its walk bound as a defence against adapter input.
+
+#### WR-208. `SmFilletExecutive` leaks the edge-use arrays `LoadFilletSolver` puts in `m_vVertexCornerMap` for vertices that get no corner
+- **Location:** `source/SMLib/src/SmFilletExecutive.cpp:1803-1808` (`LoadFilletSolver`: `new SmTArray<SmEdgeuse*>` per newly filleted vertex, stored in `m_vVertexCornerMap`); `:1844-1870` (`CreateFilletCorners` hands the array to `SmFilletCorner::Create` and replaces the map entry with the corner, which deletes it in `~SmFilletCorner`); the destructor (`~SmFilletExecutive`) never frees map values.
+- **What happens:** an array leaks for every filleted vertex whose corner is never created: the executive is destroyed before `CreateFilletCorners`, or `SmFilletCorner::Create` returns `NULL` for the vertex (`continue` at `:1863`).
+- **Trigger:** `SetFilletParameters` on edges of a box, then destroying the executive without `CreateFilletCorners` (48 + 128 bytes per filleted vertex).
+- **How found:** valgrind over the `blend.fillet_executive_p2` difftest cases (PR #267).
+- **Confirmed:** yes (valgrind: definitely lost blocks allocated in `SmFilletExecutive::LoadFilletSolver`, no invalid reads or writes).
+- **Severity:** memory leak; results unaffected.
+- **Related:** UB-209 (the same arrays, read as corners by `CollectTangentEdgeSequence`).
+- **Rust port:** no leak (the executive owns its records).
+
+#### UB-209. `CollectTangentEdgeSequence` calls `GetTangentFilletSolver` on the raw edge-use array of a vertex without a corner
+- **Location:** `source/SMLib/src/SmFilletExecutive.cpp:1803-1808` (`LoadFilletSolver` stores a `SmTArray<SmEdgeuse*>` for each filleted vertex in `m_vVertexCornerMap`); `:1844-1863` (`CreateFilletCorners` replaces it with the corner only when `SmFilletCorner::Create` succeeds, and otherwise `continue`s and still returns success); `:1605` (`GetFilletCornerOfVertex` C-casts the map value to `SmFilletCorner*`, reached through `SmFilletSolver::GetFilletCorner`, `SmFilletSolver.cpp:221-226`); `:4620-4622` (`CollectTangentEdgeSequence`: `NER( pCorner0 )` passes, then `pCorner0->GetTangentFilletSolver( pFS )`; the same at `:4642`, `:4660`, `:4681`).
+- **What happens:** for a vertex whose corner `Create` does not implement ("Corner Case Not Implemented", `SmFilletCorner.cpp:1304`, `:1317`, `:1375`), the map entry stays the edge-use array. The tangent walk takes it for a corner and makes a virtual call on an object of the wrong type.
+- **Trigger:** through the public API: `DoFillet` runs `CreateFilletCorners`, then `CreateFilletBrep` (`:1938`) calls `ProcessSmoothEdgeSequences`, then `CollectTangentEdgeSequence`, on an edge set where one filleted vertex has no implemented corner (e.g. two filleted edges at an apex of five or more edges) and at least two solvers remain.
+- **How found:** pre-review of PR #267 (`blend.fillet_executive_p2`), by source reading.
+- **Confirmed:** no (no native reproduction built; the shim's executive ops never fillet such a vertex).
+- **Severity:** crash/UB (virtual call through a mistyped pointer).
+- **Related:** WR-208 (the same `m_vVertexCornerMap` arrays leak for vertices without a corner).
+- **Rust port:** `ExecutiveAccess::solver_corner` yields `None` for a vertex without a corner, so the walk returns `SM_ERR_NULL_POINTER` (upstream's `NER`) instead.
