@@ -334,12 +334,12 @@ impl Default for BoundingBoxOptions {
 fn face_bounding_box(kernel: &Kernel, brep: &Brep, face: FaceId, out: &mut Extent3d) -> Result<()> {
     // The loose face calculation writes its caller's box only on success. In
     // particular, the tight B-rep loop reuses the previous face's box on failure.
-    *out = crate::query::face::p1::calculate_loose_bounding_box(kernel, brep, face)?;
+    *out = crate::query::face::p1::calculate_bounding_box(kernel, brep, face, false)?;
     Ok(())
 }
 fn face_tight_bounding_box(
     kernel: &Kernel,
-    brep: &mut Brep,
+    brep: &Brep,
     face: FaceId,
     out: &mut Extent3d,
 ) -> Result<()> {
@@ -353,15 +353,13 @@ fn face_tight_bounding_box(
 /// [`crate::topology::brep::p1`], in their recorded order. Tolerance expansion is
 /// per object, in addition to any expansion performed by that object's box
 /// calculation; disabling it does not disable the child's own expansion.
-/// The tight face path can attach UV trim curves to the original B-rep. Use
-/// [`calculate_loose_bounding_box`] for a read-only query with `tight = false`.
 ///
 /// # Errors
 /// Propagates the first failing list lookup or edge or face box calculation.
 /// The result is returned only after the entire selected calculation succeeds.
 pub fn calculate_bounding_box(
     kernel: &Kernel,
-    brep: &mut Brep,
+    brep: &Brep,
     options: BoundingBoxOptions,
 ) -> Result<Extent3d> {
     if !options.tight {
@@ -384,7 +382,7 @@ pub fn calculate_bounding_box(
     Ok(bbox)
 }
 
-/// The read-only B-rep box with the native `bTight = false` behavior.
+/// The B-rep box with the native `bTight = false` behavior.
 ///
 /// `approximate` and `expand_by_zone_tolerance` retain the corresponding options
 /// of [`BoundingBoxOptions`]; their native defaults are `false` and `true`.
@@ -410,7 +408,7 @@ pub fn calculate_loose_bounding_box(
     )?;
     for id in faces {
         let tolerance = brep.face(id)?.tolerance;
-        let mut fbox = crate::query::face::p1::calculate_loose_bounding_box(kernel, brep, id)?;
+        let mut fbox = crate::query::face::p1::calculate_bounding_box(kernel, brep, id, false)?;
         if expand_by_zone_tolerance {
             fbox.expand_absolute(tolerance);
         }
@@ -484,7 +482,7 @@ fn bounding_box_before_faces(
 ///
 /// # Errors
 /// An unavailable face/edge callee or an invalid arena reference.
-pub fn calculate_tight_bounding_box(kernel: &Kernel, brep: &mut Brep) -> Result<Extent3d> {
+pub fn calculate_tight_bounding_box(kernel: &Kernel, brep: &Brep) -> Result<Extent3d> {
     use crate::error::ignored;
     use crate::nurbs::b_spline_curve::BoundingBoxRequest;
     use crate::topology::brep::p1;
@@ -556,4 +554,197 @@ pub fn lock_bounding_box(kernel: &Kernel, brep: &mut Brep, tight: bool) -> Resul
 /// Release the locked box, also succeeding when no box is locked.
 pub fn unlock_bounding_box(brep: &mut Brep) {
     brep.locked_bounding_box = None;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::EntityRef;
+    use crate::geom::attribute::{AttributeValue, Behavior};
+    use crate::intersect::point_class::{PointClassType, PointClassification};
+
+    #[test]
+    fn copied_brep_does_not_reuse_the_original_locked_box() {
+        let k = Kernel::default();
+        let mut original = Brep::new();
+        let vertex = original.add_vertex(Vec3::ZERO).unwrap();
+        lock_bounding_box(&k, &mut original, false).unwrap();
+        let original_box = calculate_loose_bounding_box(&k, &original, false, true).unwrap();
+
+        // SmBrep's copy constructor sets m_pLockedBoundingBox to NULL.
+        let mut copied = original.clone();
+        assert!(copied.locked_bounding_box.is_none());
+        copied.vertex_mut(vertex).unwrap().point = Vec3::new(10.0, 20.0, 30.0);
+        let copied_box = calculate_loose_bounding_box(&k, &copied, false, true).unwrap();
+        assert!(copied_box.min().x > original_box.max().x);
+
+        // The original keeps returning its locked box after its vertex moves.
+        original.vertex_mut(vertex).unwrap().point = Vec3::new(-5.0, 0.0, 0.0);
+        assert_eq!(
+            calculate_bounding_box(&k, &original, BoundingBoxOptions::default()).unwrap(),
+            original_box
+        );
+        unlock_bounding_box(&mut original);
+        unlock_bounding_box(&mut original);
+        let unlocked =
+            calculate_bounding_box(&k, &original, BoundingBoxOptions::default()).unwrap();
+        assert!(unlocked.min().x < original_box.min().x);
+    }
+
+    #[test]
+    fn tight_box_ignores_lock_and_zone_tolerances() {
+        let k = Kernel::default();
+        let mut b = Brep::new();
+        b.add_vertex(Vec3::new(1.0, 2.0, 3.0)).unwrap();
+        b.add_vertex(Vec3::new(-1.0, 0.0, 4.0)).unwrap();
+        let tight = calculate_tight_bounding_box(&k, &b).unwrap();
+        assert_eq!(tight.min(), Vec3::new(-1.0, 0.0, 3.0));
+        assert_eq!(tight.max(), Vec3::new(1.0, 2.0, 4.0));
+        let loose = calculate_bounding_box(&k, &b, BoundingBoxOptions::default()).unwrap();
+        assert!(loose.min().x < tight.min().x && loose.max().z > tight.max().z);
+        let unexpanded = calculate_bounding_box(
+            &k,
+            &b,
+            BoundingBoxOptions {
+                expand_by_zone_tolerance: false,
+                ..BoundingBoxOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(unexpanded, tight);
+        lock_bounding_box(&k, &mut b, true).unwrap();
+        assert_eq!(b.locked_bounding_box, Some(tight));
+    }
+
+    #[test]
+    fn decimation_copies_reset_sort_indices() {
+        let vertex = decimate_vertex_attribute(7, Behavior::Copy);
+        let edge = quadric_edge_attribute(8, Behavior::Copy);
+        let quadric = quadric_vertex_attribute(9, Behavior::Copy);
+        assert!(matches!(
+            edge.value(),
+            AttributeValue::QuadricEdge(QuadricEdgeData {
+                sort_index: None,
+                ..
+            })
+        ));
+        let mut vertex = vertex;
+        if let AttributeValue::DecimateVertex(data) = vertex.value_mut() {
+            data.sort_index = 41;
+        }
+        assert!(matches!(
+            vertex.make_copy().value(),
+            AttributeValue::DecimateVertex(DecimateVertexData { sort_index: 0, .. })
+        ));
+        assert!(matches!(
+            edge.make_copy().value(),
+            AttributeValue::QuadricEdge(QuadricEdgeData {
+                sort_index: Some(0),
+                ..
+            })
+        ));
+        assert_eq!(quadric.make_copy(), quadric);
+    }
+
+    struct Fixed {
+        regions: Vec<EntityRef>,
+        rays: Vec<Result<Option<EntityRef>>>,
+        fired: Vec<Vec3>,
+    }
+
+    impl BrepClassifyObjects<EntityRef> for Fixed {
+        fn boundary_intersection(
+            &mut self,
+            _kernel: &Kernel,
+            _point: Point3,
+            _point_zone_tolerance: f64,
+            _classification: &mut PointClassification<EntityRef>,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+        fn regions(&self) -> Result<Vec<EntityRef>> {
+            Ok(self.regions.clone())
+        }
+        fn ray_fire(
+            &mut self,
+            _kernel: &Kernel,
+            _point: Point3,
+            direction: Vec3,
+            _point_zone_tolerance: f64,
+            _classification: &mut PointClassification<EntityRef>,
+        ) -> Result<Option<EntityRef>> {
+            self.fired.push(direction);
+            if self.rays.is_empty() {
+                Ok(None)
+            } else {
+                self.rays.remove(0)
+            }
+        }
+    }
+
+    #[test]
+    fn classify_retries_rays_in_native_order() {
+        use crate::topology::RegionId;
+        let k = Kernel::default();
+        let r = |i| EntityRef::Region(RegionId::from_index(i));
+        // A single region is returned without firing rays.
+        let mut single = Fixed {
+            regions: vec![r(0)],
+            rays: Vec::new(),
+            fired: Vec::new(),
+        };
+        let mut pc = PointClassification::new(1e-6);
+        point_3d_classify(&k, &mut single, Vec3::ZERO, 1e-6, true, &mut pc).unwrap();
+        assert_eq!(pc.point_class(), PointClassType::Region);
+        assert_eq!(pc.object(), Some(r(0)));
+        assert!(single.fired.is_empty());
+
+        // An ordinary failure and an empty hit move on: +X, -X, then +Y.
+        let mut several = Fixed {
+            regions: vec![r(0), r(1)],
+            rays: vec![Err(SolidError::sm_err("ray")), Ok(None), Ok(Some(r(1)))],
+            fired: Vec::new(),
+        };
+        point_3d_classify(&k, &mut several, Vec3::ZERO, 1e-6, false, &mut pc).unwrap();
+        assert_eq!(pc.object(), Some(r(1)));
+        assert_eq!(
+            several.fired,
+            [
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(-1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0)
+            ]
+        );
+
+        // A successful ray without a region skips the opposite direction, as
+        // upstream only retries on a failed status; no region at the end is SM_ERR.
+        // Unported propagates at once.
+        let mut none = Fixed {
+            regions: vec![r(0), r(1)],
+            rays: Vec::new(),
+            fired: Vec::new(),
+        };
+        assert!(matches!(
+            point_3d_classify(&k, &mut none, Vec3::ZERO, 1e-6, false, &mut pc),
+            Err(SolidError::Upstream { .. })
+        ));
+        assert_eq!(
+            none.fired,
+            [
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0)
+            ]
+        );
+        let mut unported = Fixed {
+            regions: vec![r(0), r(1)],
+            rays: vec![Err(SolidError::unported("x", "y"))],
+            fired: Vec::new(),
+        };
+        assert!(matches!(
+            point_3d_classify(&k, &mut unported, Vec3::ZERO, 1e-6, false, &mut pc),
+            Err(SolidError::Unported { .. })
+        ));
+        assert_eq!(unported.fired.len(), 1);
+    }
 }

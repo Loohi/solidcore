@@ -1,5 +1,8 @@
 //! query.brep: actual `SM_API` evaluation entry points, status and failure atomicity.
 //! Surface APIs, decimation attributes and B-rep query batches.
+#[path = "query_brep/query_metadata.rs"]
+mod query_metadata;
+
 use super::surface_surface_cache_p1::{push3, status};
 use super::surface_surface_cache_p3::{gen_surf, push_surf, surf_domain, surface_in, SurfIn};
 use crate::case::CaseContext;
@@ -548,7 +551,7 @@ fn bbox_import(
 ) -> Result<
     (
         solidcore::topology::Brep,
-        super::topology_vertexuse::QueryMetadata,
+        query_metadata::QueryMetadata,
     ),
     HarnessError,
 > {
@@ -583,10 +586,10 @@ fn bbox_import(
             "truncated or trailing bbox query metadata",
         ));
     }
-    let metadata = super::topology_vertexuse::apply_query_metadata(
+    let metadata = query_metadata::apply_query_metadata(
         &mut graph,
         values.as_slice(),
-        &super::geom_object::query_graph_identity,
+        &query_graph_identity,
     )?;
     if metadata.deferred_output_for(false, false).is_none() {
         use solidcore::topology::brep::p1;
@@ -655,14 +658,14 @@ fn bbox_rust(i: &BboxInput) -> Result<Output, HarnessError> {
                 expand,
             } => brep::calculate_bounding_box(
                 &k,
-                &mut graph,
+                &graph,
                 brep::BoundingBoxOptions {
                     approximate,
                     tight,
                     expand_by_zone_tolerance: expand,
                 },
             ),
-            BoxStep::Tight => brep::calculate_tight_bounding_box(&k, &mut graph),
+            BoxStep::Tight => brep::calculate_tight_bounding_box(&k, &graph),
             BoxStep::Lock { tight } => {
                 locked = false;
                 brep::lock_bounding_box(&k, &mut graph, tight).map(|()| {
@@ -745,4 +748,14 @@ fn generate_bbox(rng: &mut Rng) -> BboxInput {
             BoxStep::Tight,
         ],
     }
+}
+
+/// The identity the bbox fixtures' native metadata is keyed by: the arena identity
+/// shifted past the importer's own keys (as the shared query-graph importers do).
+fn query_graph_identity(
+    object: solidcore::topology::brep_cache::CacheObject,
+) -> solidcore::geom::object::ObjectRef {
+    let mut identity = solidcore::topology::brep_cache::arena_identity(object);
+    identity.key = solidcore::geom::attribute::ObjectKey(identity.key.0 + 0x10_0000);
+    identity
 }

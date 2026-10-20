@@ -19,7 +19,7 @@
 //! default `EntityRef` handles are meaningful only within this one B-rep.
 //!
 //! Ray sectoring borrows the B-rep mutably because it may create UV trim curves.
-//! `RayFire`'s returned intersection is translated with `try_map_objects`, retaining
+//! `RayFire`'s returned intersection is translated with `map_objects`, retaining
 //! every scalar and optional field. The coordinator never reads the ray's private
 //! intersection scratch after an error, so the returned-value `RayFire` API suffices.
 //! Unavailable face tolerance/trim queries remain errors of their real callees.
@@ -232,7 +232,7 @@ impl<O: ClassObject> BrepClassifyObjects<O> for BrepPointObjects<'_, O> {
     ) -> Result<bool> {
         (self.geometry_check)()?;
         let cache = cache_for(kernel, self.brep, self.cache, self.keys)?;
-        let mut objects = BrepObjects {
+        let objects = BrepObjects {
             brep: self.brep,
             brep_id: self.brep_id,
             cache,
@@ -241,7 +241,7 @@ impl<O: ClassObject> BrepClassifyObjects<O> for BrepPointObjects<'_, O> {
         };
         let solutions = TopologySolver::brep_point_solve(
             kernel,
-            &mut objects,
+            &objects,
             Some(CacheObject::Brep),
             point,
             TopologySolveOptions {
@@ -287,13 +287,15 @@ impl<O: ClassObject> BrepClassifyObjects<O> for BrepPointObjects<'_, O> {
         classification: &mut PointClassification<O>,
     ) -> Result<Option<O>> {
         (self.geometry_check)()?;
-        let slot = &mut *self.cache;
-        let keys = self.keys;
-        let hit = p2::ray_fire_with_cache(
+        // Upstream builds the cache inside BrepPointSolve, after RayFire's B-rep
+        // box; main's `ray_fire` takes a built cache, so it is built first here.
+        // Both are ordinary failures to the coordinator, which tries the next ray.
+        let cache = cache_for(kernel, self.brep, self.cache, self.keys)?;
+        let hit = p2::ray_fire(
             kernel,
             self.brep,
             self.brep_id,
-            move |brep| cache_for(kernel, brep, slot, keys),
+            cache,
             self.keys,
             self.owner_of,
             point,
@@ -303,7 +305,7 @@ impl<O: ClassObject> BrepClassifyObjects<O> for BrepPointObjects<'_, O> {
         )?;
         *classification = hit
             .intersection
-            .try_map_objects(|entity| self.entity_object(entity))?;
+            .map_objects(&mut |entity| self.entity_object(entity))?;
         hit.region
             .map(|region| self.entity_object(EntityRef::Region(region)))
             .transpose()
