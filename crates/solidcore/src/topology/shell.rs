@@ -868,6 +868,8 @@ pub trait ShellRayWorld<O>: crate::intersect::topology_solver::p1::TopologyObjec
         _brep: crate::topology::BrepId,
     ) -> Result<crate::geom::extent3d::Extent3d> {
         // UNPORTED(query.brep): SmBrep::CalculateBoundingBox
+        // (query::brep::calculate_bounding_box is ported; a world that holds the B-rep
+        // for this id overrides this default with it)
         Err(SolidError::unported(
             "SmBrep::CalculateBoundingBox",
             "query.brep",

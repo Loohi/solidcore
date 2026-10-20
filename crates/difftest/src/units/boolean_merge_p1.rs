@@ -839,17 +839,20 @@ fn run_rust(i: &Inputs, b: &mut Brep, other: &Brep) -> Result<Vec<f64>, SolidErr
         7 => {
             let mut other = other.clone();
             // The native probe constructs and immediately destroys its shift.
-            port::temporary_brep_transform(b, &mut other)?.restore(
-                Some(b),
-                Some(&mut other),
-                |_brep, _is_other, _xfm, _scale, _scale_tolerance| {
-                    // UNPORTED(topology.brep_p5): SmBrep::Transform
-                    Err(SolidError::unported(
-                        "SmBrep::Transform",
-                        "topology.brep_p5",
-                    ))
-                },
-            )?;
+            let transform = |_brep: &mut Brep,
+                             _is_other: bool,
+                             _xfm: &solidcore::geom::axis2_placement::Axis2Placement,
+                             _scale: Option<Vec3>,
+                             _scale_tolerance: bool| {
+                // UNPORTED(topology.brep_p5): SmBrep::Transform
+                Err(SolidError::unported(
+                    "SmBrep::Transform",
+                    "topology.brep_p5",
+                ))
+            };
+            let token = port::temporary_brep_transform(&k, &k, b, &other)?;
+            token.translate(b, &mut other, transform)?;
+            token.restore(Some(b), Some(&mut other), transform)?;
         }
         8 | 9 => {
             let sec = EdgeuseId::from_index(u32::from(a) % b.edgeuses().len() as u32);

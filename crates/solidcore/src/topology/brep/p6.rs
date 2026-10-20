@@ -11,8 +11,8 @@
 //!
 //! Deviations: pointers become arena ids; optional outputs become return values.
 //! Edits preserve the upstream mutations preceding an error. Missing callees stop
-//! at their first call: face construction at `SetTolerance` (`face_p3`), and a closed-shell split at
-//! `CalculateBoundingBox` (`query.brep`) after its two `SmBrep::Notify` calls
+//! at their first call: face construction at `SetTolerance` (`face_p3`), and a closed-shell split
+//! after `CalculateBoundingBox` (`query.brep`), which follows its two `SmBrep::Notify` calls
 //! ([`crate::topology::brep::p2::notify`] with the caller's [`NotifyEnv`], statuses
 //! ignored; the new region gets its default `SmTopology` record when it is made, as
 //! `new SmRegion`). The dependent remainder of each algorithm is deferred, rather than
@@ -257,8 +257,8 @@ pub fn make_face_topology(
 /// Split a region when the seed face use bounds a closed set of neighbors.
 /// Returns `(new_shell, new_region)`. Already separated mates, lamina faces and
 /// non-closed traversals succeed without creating either object. Closed sets move
-/// to a new solid region/shell, both notified through `env`, before the B-rep box
-/// defers on `query.brep`.
+/// to a new solid region/shell, both notified through `env`; after the B-rep box the
+/// rest of the split (infinite-region testing, residual distribution) is not ported.
 /// The caller's marks and kernel context persist across calls. Every acquired
 /// mark lock is released on success and on error.
 pub fn test_closure_split_region(
@@ -414,12 +414,25 @@ fn split_closed(
         NotifyOperation::SplitInBrep,
         [region(old_region), region(old_region), region(new_region)],
     ))?;
-    // CalculateBoundingBox, infinite-region testing, classification of residual
-    // faces/wires/shells and empty-shell/region cleanup follow.
-    // UNPORTED(query.brep): SmBrep::CalculateBoundingBox
+    // SER(CalculateBoundingBox(sBrepBBox, TRUE, FALSE)): a rough bound for the radius
+    // (the omitted expansion argument keeps its TRUE header default).
+    let brep_bbox = crate::query::brep::calculate_bounding_box(
+        k,
+        brep,
+        crate::query::brep::BoundingBoxOptions {
+            approximate: true,
+            tight: false,
+            expand_by_zone_tolerance: true,
+        },
+    )?;
+    let _brep_radius = brep_bbox.sphere_bound().radius;
+    // Infinite-region testing (FindAndSetInfiniteRegion, unit topology.brep_p5),
+    // classification of residual faces/wires/shells and empty-shell/region cleanup
+    // follow; that remainder of this function is not ported yet.
+    // UNPORTED(topology.brep_p6): SmBrep::TestClosureSplitRegion after the B-rep box
     Err(SolidError::unported(
-        "SmBrep::CalculateBoundingBox",
-        "query.brep",
+        "SmBrep::TestClosureSplitRegion (after CalculateBoundingBox)",
+        "topology.brep_p6",
     ))
 }
 
@@ -498,11 +511,13 @@ mod tests {
             true,
             first,
         );
+        // The approximate B-rep box (query.brep) skips faces, so the split reaches
+        // the unported remainder after both notifications and the box.
         assert!(matches!(
             result,
             Err(SolidError::Unported {
-                upstream: "SmBrep::CalculateBoundingBox",
-                unit: "query.brep",
+                unit: "topology.brep_p6",
+                ..
             })
         ));
         // the new region got its (default) SmTopology record

@@ -718,6 +718,7 @@ fn classify_point(
     _classification: &mut PointClassification<EntityRef>,
 ) -> Result<()> {
     // UNPORTED(query.brep): SmBrep::Point3DClassify
+    // query::brep::point_3d_classify is ported; this caller has no B-rep cache/identity context (BrepQueryContext) or mutable B-rep to pass yet.
     Err(SolidError::unported(
         "SmBrep::Point3DClassify",
         "query.brep",
@@ -1387,7 +1388,10 @@ pub fn manifold_boolean(
 ) -> Result<bool> {
     let a = required(primary.as_mut())?;
     let b = required(other.as_mut())?;
-    let transform = p1::temporary_brep_transform(a, b)?;
+    let transform = p1::temporary_brep_transform(kernels.primary, kernels.other(), a, b)?;
+    transform.translate(a, b, |brep, is_other, xfm, scale, scale_tol| {
+        intersector.transform_brep(kernels, brep, is_other, attributes, xfm, scale, scale_tol)
+    })?;
     // This outer scope matches sTempXfm's lifetime: every Result exit from the
     // complete operation (including imprint, extraction and deletion) first
     // leaves its mark/edit scopes, then restores only surviving operands.

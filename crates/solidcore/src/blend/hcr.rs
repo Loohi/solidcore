@@ -219,13 +219,12 @@ fn find_and_set_infinite_region(brep: &mut Brep) -> Result<()> {
 }
 
 /// `SmBrep::CalculateBoundingBox` (unit `query.brep`).
-fn brep_bounding_box(brep: &Brep) -> Result<Extent3d> {
-    let _ = brep;
-    // UNPORTED(query.brep): SmBrep::CalculateBoundingBox
-    Err(SolidError::unported(
-        "SmBrep::CalculateBoundingBox",
-        "query.brep",
-    ))
+fn brep_bounding_box(k: &Kernel, brep: &Brep) -> Result<Extent3d> {
+    crate::query::brep::calculate_bounding_box(
+        k,
+        brep,
+        crate::query::brep::BoundingBoxOptions::default(),
+    )
 }
 
 /// `SmBrep::GetInfiniteRegion` (unit `topology.brep_p1`).
@@ -515,7 +514,7 @@ impl Hcr {
         ignore_status(transform_brep(&mut scene, &vt))?;
         ignore_status(find_and_set_infinite_region(&mut scene))?; // [B23]
                                                                   // its status is ignored upstream (the box then stays empty)
-        let scene_box = ignored(brep_bounding_box(&scene))?.unwrap_or_else(Extent3d::new);
+        let scene_box = ignored(brep_bounding_box(k, &scene))?.unwrap_or_else(Extent3d::new);
         Ok(Self::from_scene(k, scene, view_transform, scene_box, opts))
     }
 

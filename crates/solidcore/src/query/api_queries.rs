@@ -364,6 +364,7 @@ fn classify_point(
     _tolerance: f64,
 ) -> Result<(PointClassType, bool)> {
     // UNPORTED(query.brep): SmBrep::Point3DClassify
+    // query::brep::point_3d_classify is ported; this caller has no B-rep cache/identity context (BrepQueryContext) or mutable B-rep to pass yet.
     Err(SolidError::unported(
         "SmBrep::Point3DClassify",
         "query.brep",
@@ -578,17 +579,22 @@ pub fn brep_is_manifold_solid(brep: &Brep) -> Result<bool> {
     crate::topology::brep::p2::is_manifold_solid(brep)
 }
 
-/// Loose or tight B-rep box (`SmApiBrepBoundingBox`); missing queries are `Unported`.
-pub fn brep_bounding_box(_k: &Kernel, _brep: &Brep, tight: bool) -> Result<Extent3d> {
-    // UNPORTED(query.brep): SmBrep::CalculateBoundingBox / CalculateTightBoundingBox
-    Err(SolidError::unported(
-        if tight {
-            "SmBrep::CalculateTightBoundingBox"
-        } else {
-            "SmBrep::CalculateBoundingBox"
-        },
-        "query.brep",
-    ))
+/// Loose or tight B-rep box (`SmApiBrepBoundingBox`): `CalculateTightBoundingBox`
+/// or `CalculateBoundingBox` with its defaults ([`crate::query::brep`]).
+///
+/// # Errors
+///
+/// Those of the selected box calculation.
+pub fn brep_bounding_box(k: &Kernel, brep: &Brep, tight: bool) -> Result<Extent3d> {
+    if tight {
+        crate::query::brep::calculate_tight_bounding_box(k, brep)
+    } else {
+        crate::query::brep::calculate_bounding_box(
+            k,
+            brep,
+            crate::query::brep::BoundingBoxOptions::default(),
+        )
+    }
 }
 
 /// Loose or tight face box (`SmApiFaceBoundingBox`); missing queries are `Unported`.

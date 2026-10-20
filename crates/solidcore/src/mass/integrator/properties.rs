@@ -348,12 +348,12 @@ pub fn boundary_properties(
     Ok(result)
 }
 
-fn brep_box(_b: &Brep) -> Result<Extent3d> {
-    // UNPORTED(query.brep): SmBrep::CalculateBoundingBox
-    Err(SolidError::unported(
-        "SmBrep::CalculateBoundingBox",
-        "query.brep",
-    ))
+fn brep_box(k: &Kernel, b: &Brep) -> Result<Extent3d> {
+    crate::query::brep::calculate_bounding_box(
+        k,
+        b,
+        crate::query::brep::BoundingBoxOptions::default(),
+    )
 }
 fn face_box(k: &Kernel, b: &Brep, f: FaceId) -> Result<Extent3d> {
     crate::query::face::p1::calculate_bounding_box(k, b, f, false)
@@ -396,7 +396,7 @@ pub fn brep_properties(
     behavior: MassPropertyBehavior,
     attributes: &PropertyAttributes<'_>,
 ) -> Result<PreciseProperties> {
-    let bbox = brep_box(b)?;
+    let bbox = brep_box(k, b)?;
     let size = bbox.size();
     let estimated = size.z.max(size.x.max(size.y));
     let estimated = estimated * estimated / 100.0;
@@ -598,7 +598,7 @@ pub fn brep_volume(
     attributes: &PropertyAttributes<'_>,
 ) -> Result<f64> {
     valid_api_number(accuracy)?;
-    let bbox = brep_box(b)?;
+    let bbox = brep_box(k, b)?;
     Ok(brep_properties(
         k,
         b,

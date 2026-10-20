@@ -24,8 +24,10 @@
 //! box calculations return their outputs, preserving failure atomicity where
 //! upstream does. Classification retains its in/out state, including writes
 //! before failure. The locked box is owned by the B-rep. Unfiltered object lists
-//! use the native list order resolved by `topology::brep::p1`. No input-driven
-//! recursion is added here.
+//! use the native list order resolved by `topology::brep::p1`. Region ray firing
+//! ([`BrepPointObjects`]) builds the B-rep cache before `RayFire`'s box instead of
+//! inside the solve; both are ordinary failures that only select the next ray.
+//! No input-driven recursion is added here.
 //! Destructors use ownership rather than poisoning fields just before freeing.
 //! The quadric edge constructor leaves its sort index uninitialised in C++; the
 //! port represents that state by `None` instead of exposing undefined memory.

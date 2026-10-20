@@ -166,7 +166,7 @@ impl<O: Copy + PartialEq> BrepCache<O> {
         }
         let mut bbox = match source {
             CacheSource::Brep(b) => {
-                let mut bbox = brep_bounding_box(b)?;
+                let mut bbox = brep_bounding_box(k, b)?;
                 bbox.expand_absolute(b.tolerance() * 100.0);
                 let size = bbox.size();
                 bbox.add_point(bbox.max() + 0.15 * size);
@@ -435,12 +435,13 @@ fn resize_edge(
     Ok(())
 }
 
-fn brep_bounding_box(_b: &Brep) -> Result<Extent3d> {
-    // UNPORTED(query.brep): SmBrep::CalculateBoundingBox
-    Err(SolidError::unported(
-        "SmBrep::CalculateBoundingBox",
-        "query.brep",
-    ))
+/// `SmBrep::CalculateBoundingBox(box)` with defaults (unit `query.brep`).
+fn brep_bounding_box(k: &Kernel, b: &Brep) -> Result<Extent3d> {
+    crate::query::brep::calculate_bounding_box(
+        k,
+        b,
+        crate::query::brep::BoundingBoxOptions::default(),
+    )
 }
 
 // (SmBrep::GetVertices / GetEdges / GetFaces are wired to topology::brep::p1; the
@@ -753,12 +754,16 @@ mod tests {
             cache.resize_trees(&k, &b, &[], &[], &[], &arena_identity, &|_| None),
             Err(SolidError::InvalidInput { .. })
         ));
+        // A face without a surface fails the B-rep box (`query.brep`) before any tree
+        // is installed.
+        let mut b = Brep::new();
+        b.add_face_record(crate::topology::Face::new(
+            crate::topology::ShellId::from_index(0),
+        ))
+        .unwrap();
         assert!(matches!(
             cache.build_trees(&k, CacheSource::Brep(&b), |o| o, &arena_identity),
-            Err(SolidError::Unported {
-                unit: "query.brep",
-                ..
-            })
+            Err(SolidError::InvalidInput { .. })
         ));
         assert!(
             cache.vertex_tree().is_none()

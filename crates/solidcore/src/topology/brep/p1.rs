@@ -656,7 +656,7 @@ pub fn is_degenerate(k: &Kernel, b: &Brep, tol_3d: f64) -> Result<bool> {
     // status is ignored: a failure leaves the default box)
     // CalculateBoundingBox(sBBox): header defaults bApprox = FALSE, bTight = FALSE,
     // bExpandByZoneTol3d = TRUE
-    let bbox = ignored(brep_bounding_box(b, false, false, true))?.unwrap_or_default();
+    let bbox = ignored(brep_bounding_box(k, b, false, false, true))?.unwrap_or_default();
     Ok(bbox.is_point_sized(tol_3d))
 }
 
@@ -1318,19 +1318,16 @@ pub struct LockBrepBox<'b> {
 }
 
 impl<'b> LockBrepBox<'b> {
-    /// `SmLockBrepBox(pBrep)`.
+    /// `SmLockBrepBox(pBrep)`: `pBrep->LockBoundingBox()` (default `bTight = FALSE`,
+    /// [`crate::query::brep::lock_bounding_box`]); the constructor ignores its status.
     ///
     /// # Errors
     ///
-    /// [`SolidError::Unported`]: `SmBrep::LockBoundingBox` is unit `query.brep`.
+    /// Only [`SolidError::Unported`] and the port's representation failures from the
+    /// box calculation (upstream ignores every status).
     pub fn new(k: &Kernel, brep: &'b mut Brep) -> Result<Self> {
-        let _ = k;
-        // UNPORTED(query.brep): SmBrep::LockBoundingBox
-        let _unlocked = Self { brep };
-        Err(SolidError::unported(
-            "SmBrep::LockBoundingBox",
-            "query.brep",
-        ))
+        ignored(crate::query::brep::lock_bounding_box(k, brep, false))?;
+        Ok(Self { brep })
     }
 
     /// The locked B-rep.
@@ -1342,8 +1339,7 @@ impl<'b> LockBrepBox<'b> {
 
 impl Drop for LockBrepBox<'_> {
     fn drop(&mut self) {
-        // UNPORTED(query.brep): SmBrep::UnLockBoundingBox (nothing to unlock until
-        // `new` can lock)
+        crate::query::brep::unlock_bounding_box(self.brep);
     }
 }
 
@@ -1414,17 +1410,21 @@ fn shell_mated_shells(k: &mut Kernel, b: &Brep, shell: ShellId) -> Result<Vec<Sh
 /// `SmBrep::CalculateBoundingBox(rBox, bApprox, bTight, bExpandByZoneTol3d)` (unit
 /// `query.brep`).
 fn brep_bounding_box(
+    k: &Kernel,
     b: &Brep,
     approx: bool,
     tight: bool,
     expand_by_zone_tol_3d: bool,
 ) -> Result<Extent3d> {
-    let _ = (b, approx, tight, expand_by_zone_tol_3d);
-    // UNPORTED(query.brep): SmBrep::CalculateBoundingBox
-    Err(SolidError::unported(
-        "SmBrep::CalculateBoundingBox",
-        "query.brep",
-    ))
+    crate::query::brep::calculate_bounding_box(
+        k,
+        b,
+        crate::query::brep::BoundingBoxOptions {
+            approximate: approx,
+            tight,
+            expand_by_zone_tolerance: expand_by_zone_tol_3d,
+        },
+    )
 }
 
 /// `SmEdgeuse::GetOrCreateUVTrimCurve(rpUVTrimCurve, pdOptDistToSurf, pdOptDeviation,

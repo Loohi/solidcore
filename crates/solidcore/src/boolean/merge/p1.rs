@@ -252,6 +252,7 @@ pub fn find_brep_region_of_other_face(
         // Point classification uses tolerance 0.0, boundary intersections FALSE,
         // a classification initialised with edge.tolerance and editing disabled.
         // UNPORTED(query.brep): SmBrep::Point3DClassify
+        // query::brep::point_3d_classify is ported; this caller has no B-rep cache/identity context (BrepQueryContext) or mutable B-rep to pass yet.
         return unavailable("SmBrep::Point3DClassify", "query.brep");
     }
     Ok(None)
@@ -590,14 +591,37 @@ pub fn propagate_other_src_region_attribs(
 
 /// Inverse translation retained until the entire Boolean operation leaves scope.
 /// Restore only operands that survive; extracted components are not operands of
-/// the upstream destructor. The constructor remains blocked before any mutation.
+/// the upstream destructor.
 #[derive(Debug)]
 #[must_use = "restore surviving operands after the complete Boolean scope"]
 pub struct TemporaryBrepTransform {
+    forward: Option<Axis2Placement>,
     inverse: Option<Axis2Placement>,
 }
 
 impl TemporaryBrepTransform {
+    /// The constructor's translation of both operands (primary, then other) by the
+    /// negated box center, when one is needed. As upstream, transform statuses are
+    /// not checked; only [`SolidError::Unported`] and the port's representation
+    /// failures propagate.
+    ///
+    /// # Errors
+    ///
+    /// Those propagated by `transform`.
+    pub fn translate(
+        &self,
+        primary: &mut Brep,
+        other: &mut Brep,
+        mut transform: impl FnMut(&mut Brep, bool, &Axis2Placement, Option<Vec3>, bool) -> Result<()>,
+    ) -> Result<()> {
+        if let Some(forward) = self.forward {
+            // Transform(sXfm) uses cpOptScale=NULL and bScaleTol=TRUE.
+            crate::error::ignore_status(transform(primary, false, &forward, None, true))?;
+            crate::error::ignore_status(transform(other, true, &forward, None, true))?;
+        }
+        Ok(())
+    }
+
     /// Explicit destructor for a completed scope with borrowed operands. `false`
     /// identifies the primary operand and `true` the other; the callback applies
     /// the placement with its live context and notification/attribute state.
@@ -652,16 +676,59 @@ impl TemporaryBrepTransform {
     }
 }
 
-/// Begin the scoped origin shift used by manifold Booleans. Bounding boxes are
-/// not yet available on arena B-reps; fail before translating either operand.
-/// Once wired, the returned token must retain the inverse placement (or `None`
-/// when the center's squared length is at most 1e6) until the caller restores it.
+/// Begin the scoped origin shift used by manifold Booleans
+/// (`SmTemporaryBrepTransform`'s constructor up to its `Transform` calls): the
+/// union of both operands' default boxes (`CalculateBoundingBox`, statuses ignored,
+/// so a failed box stays empty), whose center is moved to the origin when its
+/// squared length exceeds 1e6. Apply the returned forward translation with
+/// [`TemporaryBrepTransform::translate`]; the token retains the inverse placement
+/// (or `None`) until the caller restores it. `primary_kernel` and `other_kernel`
+/// are each operand's own context.
+///
+/// # Errors
+///
+/// Only [`SolidError::Unported`] and the port's representation failures from the
+/// box calculations.
 pub fn temporary_brep_transform(
-    _brep: &mut Brep,
-    _other: &mut Brep,
+    primary_kernel: &Kernel,
+    other_kernel: &Kernel,
+    brep: &Brep,
+    other: &Brep,
 ) -> Result<TemporaryBrepTransform> {
-    // UNPORTED(query.brep): SmBrep::CalculateBoundingBox
-    unavailable("SmBrep::CalculateBoundingBox", "query.brep")
+    use crate::query::brep::{calculate_bounding_box, BoundingBoxOptions};
+    // get parts bbox
+    let box1 = crate::error::ignored(calculate_bounding_box(
+        primary_kernel,
+        brep,
+        BoundingBoxOptions::default(),
+    ))?
+    .unwrap_or_default();
+    let box2 = crate::error::ignored(calculate_bounding_box(
+        other_kernel,
+        other,
+        BoundingBoxOptions::default(),
+    ))?
+    .unwrap_or_default();
+    let box1 = box1.union(&box2);
+
+    // when bbox is very large - translate its center to the origin
+    let center = box1.evaluate(0.5, 0.5, 0.5);
+    if center.length_squared() > 1.0e+6 {
+        // Artibrary: > 1000.  Don't think it makes much difference.
+        let center = -center;
+        let mut forward = Axis2Placement::IDENTITY;
+        forward.translate(center);
+        let mut inverse = Axis2Placement::IDENTITY;
+        inverse.translate(-center);
+        return Ok(TemporaryBrepTransform {
+            forward: Some(forward),
+            inverse: Some(inverse),
+        });
+    }
+    Ok(TemporaryBrepTransform {
+        forward: None,
+        inverse: None,
+    })
 }
 
 #[cfg(test)]
@@ -675,6 +742,7 @@ mod tests {
                 let mut inverse = Axis2Placement::IDENTITY;
                 inverse.translate(Vec3::new(2001.0, -3002.0, 4003.0));
                 let token = TemporaryBrepTransform {
+                    forward: None,
                     inverse: Some(inverse),
                 };
                 let mut a = Brep::new();
@@ -755,15 +823,18 @@ mod tests {
                 }
             }
         }
-        TemporaryBrepTransform { inverse: None }
-            .run(
-                &mut Some(Brep::new()),
-                &mut Some(Brep::new()),
-                &mut (),
-                |(), _, _| Ok(()),
-                |(), _, _, _, _, _| panic!("identity scope must not transform"),
-            )
-            .unwrap();
+        TemporaryBrepTransform {
+            forward: None,
+            inverse: None,
+        }
+        .run(
+            &mut Some(Brep::new()),
+            &mut Some(Brep::new()),
+            &mut (),
+            |(), _, _| Ok(()),
+            |(), _, _, _, _, _| panic!("identity scope must not transform"),
+        )
+        .unwrap();
     }
 
     #[test]

@@ -149,6 +149,7 @@ fn brep_point3d_classify<O>(
     _pc: &mut PointClassification<O>,
 ) -> Result<()> {
     // UNPORTED(query.brep): SmBrep::Point3DClassify
+    // query::brep::point_3d_classify is ported; this caller only holds a generic handle, not the B-rep and its cache/identity context (BrepQueryContext).
     Err(SolidError::unported(
         "SmBrep::Point3DClassify",
         "query.brep",

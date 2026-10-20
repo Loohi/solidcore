@@ -114,7 +114,7 @@ where
         };
         let bounds = match supplied_box {
             Some(bounds) => bounds,
-            None => crate::error::ignored(brep_bounds(b))?
+            None => crate::error::ignored(brep_bounds(k, b))?
                 .unwrap_or_else(crate::geom::extent3d::Extent3d::new),
         };
         let ray_start = bounds.max() + (bounds.max() - bounds.min()) * 0.5;
@@ -321,13 +321,13 @@ fn brep_edges(b: &Brep) -> Result<Vec<EdgeId>> {
     crate::topology::brep::p1::edges(b, None)
 }
 
-fn brep_bounds(b: &Brep) -> Result<crate::geom::extent3d::Extent3d> {
-    let _ = b;
-    // UNPORTED(query.brep): SmBrep::CalculateBoundingBox
-    Err(SolidError::unported(
-        "SmBrep::CalculateBoundingBox",
-        "query.brep",
-    ))
+/// `SmBrep::CalculateBoundingBox(box)` with defaults (unit `query.brep`).
+fn brep_bounds(k: &Kernel, b: &Brep) -> Result<crate::geom::extent3d::Extent3d> {
+    crate::query::brep::calculate_bounding_box(
+        k,
+        b,
+        crate::query::brep::BoundingBoxOptions::default(),
+    )
 }
 
 fn brep_ray_fire<O>(

@@ -605,7 +605,8 @@ mod tests {
                 ..
             })
         ));
-        assert!(matches!(
+        // The B-rep cache's box (query.brep) no longer stops the face search.
+        assert!(!matches!(
             find_face(
                 &Kernel::default(),
                 &brep,
@@ -614,7 +615,10 @@ mod tests {
                 &crate::topology::brep_cache::arena_identity,
                 &|_| None,
             ),
-            Err(SolidError::Unported { .. })
+            Err(SolidError::Unported {
+                unit: "query.brep",
+                ..
+            })
         ));
     }
 }

@@ -58,6 +58,7 @@ fn classify_region(
     // None means another classification kind: wire passes signal SE(SM_ERR)
     // and continue; shell-vertex passes return SM_ERR via SER(SM_ERR).
     // UNPORTED(query.brep): SmBrep::Point3DClassify
+    // query::brep::point_3d_classify is ported; this caller has no B-rep cache/identity context (BrepQueryContext) or mutable B-rep to pass yet.
     Err(SolidError::unported(
         "SmBrep::Point3DClassify",
         "query.brep",

@@ -1639,11 +1639,24 @@ fn glue_key_of(e: EntityRef) -> ObjectRef {
     }
 }
 
+/// Object identities for cache construction: face/edge identities are the
+/// notification keys (`glue_key_of`), the B-rep identity is its operand slot.
+fn query_key(slot: usize, object: CacheObject) -> ObjectRef {
+    match object {
+        CacheObject::Brep => ObjectRef {
+            type_code: BREP_TYPE,
+            key: ObjectKey(slot as u64),
+        },
+        CacheObject::Edge(e) | CacheObject::Curve(e) => glue_key_of(EntityRef::Edge(e)),
+        CacheObject::Face(f) | CacheObject::Surface(f) => glue_key_of(EntityRef::Face(f)),
+        _ => arena_identity(object),
+    }
+}
+
 impl TopologyObjects<H> for Two {
     /// The B-rep's cache (`SmBrep::GetBrepCache`), built from the B-rep on first use (the
-    /// C++ topology solver builds it on demand) with this adapter's handles. The build
-    /// starts with `SmBrep::CalculateBoundingBox` (unit `query.brep`), so until that
-    /// lands the solves needing a cache defer there.
+    /// C++ topology solver builds it on demand) with this adapter's handles, keyed by
+    /// [`query_key`]. The build starts with `SmBrep::CalculateBoundingBox` (`query.brep`).
     fn brep_cache(&self, brep: H) -> solidcore::Result<&BrepCache<H>> {
         let slot = usize::try_from(brep.b).map_err(|_| invalid("bad B-rep"))?;
         let cell = self.caches.get(slot).ok_or_else(|| invalid("bad B-rep"))?;
@@ -1675,7 +1688,7 @@ impl TopologyObjects<H> for Two {
                 CacheObject::Brep => brep_h(bi),
                 _ => hd(bi, K_NULL as u8, 0),
             },
-            &arena_identity,
+            &|object| query_key(slot, object),
         )?;
         let _ = cell.set(cache);
         cell.get().ok_or_else(|| invalid("B-rep cache not stored"))

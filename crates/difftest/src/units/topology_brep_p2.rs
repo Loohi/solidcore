@@ -43,7 +43,7 @@ use solidcore::surface::surface_cache::p1::SurfaceCacheOptions;
 use solidcore::surface::trim_srf_cache::TrimSrfCache;
 use solidcore::topology::brep::p1 as bp1;
 use solidcore::topology::brep::p2 as bp2;
-use solidcore::topology::brep_cache::{BrepCache, CacheObject};
+use solidcore::topology::brep_cache::CacheObject;
 use solidcore::topology::edge::NotifyEnv;
 use solidcore::topology::topology_traverser::Marks;
 use solidcore::topology::{
@@ -833,10 +833,30 @@ fn run_rust_op(k: &mut Kernel, b: &mut Brep, op: Op, a: &[f64]) -> Result<Vec<f6
             let dir = Vec3::new(arg(3)?, arg(4)?, arg(5)?);
             let tol = tol::zone_tol3d(k, arg(6)?);
             let limit = (arg(7)? != 0.0).then_some(arg(8)?);
-            let cache = must(BrepCache::new(solidcore::geom::a_object::BREP_TYPE))?;
-            let keys = |o: CacheObject| solidcore::topology::brep_cache::arena_identity(o);
+            // Query keys retain the importer's `1 + index` identity (the geometry
+            // owners), unlike the notification sentinel in `key_of`.
+            let keys = |o: CacheObject| {
+                let identity = solidcore::topology::brep_cache::arena_identity(o);
+                ObjectRef {
+                    key: ObjectKey(identity.key.0 + 1),
+                    ..identity
+                }
+            };
             let owners = |_: ObjectRef| None;
             let kk: &Kernel = k;
+            // Upstream builds the B-rep cache lazily inside BrepPointSolve (after the
+            // B-rep box); its build failure is RayFire's status.
+            let (cs, cache) = status(solidcore::topology::brep_cache::make_brep_cache(
+                kk,
+                solidcore::topology::brep_cache::CacheSource::Brep(b),
+                &keys,
+            ))?;
+            let Some(cache) = cache else {
+                out.push(cs);
+                out.push(-1.0);
+                out.push(f64::from(PointClassType::Unknown as i32));
+                return Ok(out);
+            };
             let (s, r) = status(bp2::ray_fire(
                 kk,
                 b,

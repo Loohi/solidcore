@@ -1862,12 +1862,13 @@ fn face_edges(_b: &Brep, _f: FaceId) -> Result<Vec<EdgeId>> {
     })
 }
 
-fn brep_bounding_box(_k: &Kernel, _b: &Brep) -> Result<Extent3d> {
-    // UNPORTED(query.brep): SmBrep::CalculateBoundingBox
-    Err(SolidError::Unported {
-        upstream: "SmBrep::CalculateBoundingBox",
-        unit: "query.brep",
-    })
+/// `SmBrep::CalculateBoundingBox(box)` with defaults (unit `query.brep`).
+fn brep_bounding_box(k: &Kernel, b: &Brep) -> Result<Extent3d> {
+    crate::query::brep::calculate_bounding_box(
+        k,
+        b,
+        crate::query::brep::BoundingBoxOptions::default(),
+    )
 }
 
 /// `sm_GetPointFromSol(sSol, start)` ([`crate::topology::brep::p2::point_from_solution`]).
