@@ -33,6 +33,7 @@
 //! derivative orders `n <= 3` (the shim's array), `SmVolumeParamsType` codes `0..=8`,
 //! and at most [`MAX_NEXT`] next maps.
 
+use crate::validate::bad;
 use crate::{call_with_buffer, FfiError};
 
 /// Most control points per direction.
@@ -90,15 +91,7 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
-
-/// Sequential reader over the input, mirroring the shim's reads.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
+crate::reader::unit_reader!(MAX_COORD);
 
 impl Reader<'_> {
     fn num(&mut self) -> Result<f64, FfiError> {
@@ -175,7 +168,7 @@ impl Reader<'_> {
 ///
 /// [`FfiError::InvalidArgument`] naming the first problem.
 pub fn validate(op: Op, input: &[f64]) -> Result<(), FfiError> {
-    let mut r = Reader { input, at: 0 };
+    let mut r = Reader::new(input);
     r.volume()?;
     match op {
         Op::Info => {

@@ -5,6 +5,7 @@
 //! | Rust | Upstream |
 //! |------|----------|
 //! | [`process_wires_and_shell_vertices`] | `SmMerge::ProcessWiresAndShellVertices` |
+//! | [`process_wires_and_shell_vertices_with_kernels`] | the same stage with each operand context |
 //! | [`Relations`] | shared bidirectional mate lookups from `m_vTI` |
 //!
 //! Deviations: operands, marks and mate maps are borrowed explicitly instead of
@@ -17,8 +18,9 @@
 //! absent. The deletion retry loop is iterative; wire collection uses the bounded
 //! explicit stack of `topology_traverser`. No input-dependent recursion is added.
 //! Relations are shared mutably with `merge_p1`; notifications use its caller-owned
-//! records and attribute store. Newly created vertex relationships still wait on
-//! the full intersector `Relate` implementation.
+//! records and attribute store. Newly created vertex relationships go through
+//! `Relate` ([`Relations::relate_vertices`]), which may raise the other operand's
+//! vertex tolerance, so `other` is mutable.
 //! Missing/dangling mates are rejected only when added to the keep list:
 //! typed ids cannot represent the null pointer upstream can append there.
 
@@ -132,11 +134,13 @@ fn keep_other(operation: BooleanOperation, is_void: bool) -> bool {
 /// `keep_as_wires` is cleared even when the first subsequent operation fails.
 /// Missing callees return [`SolidError::Unported`] at the first call reached;
 /// malformed topology or missing mates return an error instead of dereferencing
-/// a null pointer. The mate maps must refer to the supplied operands.
+/// a null pointer. The mate maps must refer to the supplied operands. `other` is
+/// mutable because relating a kept vertex (`SmTopologyIntersector::Relate`) raises the
+/// smaller of the two vertex tolerances, in whichever operand holds it.
 pub fn process_wires_and_shell_vertices(
     k: &Kernel,
     brep: &mut Brep,
-    other: &Brep,
+    other: &mut Brep,
     brep_marks: &mut Marks,
     other_marks: &mut Marks,
     relations: &mut Relations,
@@ -147,6 +151,92 @@ pub fn process_wires_and_shell_vertices(
     other_mark: MarkType,
     keep_as_wires: &mut Vec<EdgeId>,
 ) -> Result<()> {
+    let keep_vertices = collect_wires_and_shell_vertices(
+        k,
+        k,
+        brep,
+        other,
+        brep_marks,
+        other_marks,
+        relations,
+        operation,
+        brep_mark,
+        other_mark,
+        keep_as_wires,
+    )?;
+    for (vertex, region) in keep_vertices {
+        p1::merge_vertex(
+            brep,
+            other,
+            Some(vertex),
+            Some(region),
+            relations,
+            copy,
+            context.as_deref_mut(),
+        )?;
+    }
+    Ok(())
+}
+
+/// The shared wire stage with live, possibly distinct operand kernels.
+/// Marks are read from their owning contexts; copied other vertices notify through
+/// the other context (or the shared primary context). Caller records and attributes
+/// remain in `copy`; no replacement context or attribute store is constructed.
+pub fn process_wires_and_shell_vertices_with_kernels(
+    primary_kernel: &mut Kernel,
+    other_kernel: Option<&mut Kernel>,
+    brep: &mut Brep,
+    other: &mut Brep,
+    brep_marks: &mut Marks,
+    other_marks: &mut Marks,
+    relations: &mut Relations,
+    copy: &mut VertexCopy<'_>,
+    operation: BooleanOperation,
+    brep_mark: MarkType,
+    other_mark: MarkType,
+    keep_as_wires: &mut Vec<EdgeId>,
+) -> Result<()> {
+    let keep_vertices = collect_wires_and_shell_vertices(
+        primary_kernel,
+        other_kernel.as_deref().unwrap_or(primary_kernel),
+        brep,
+        other,
+        brep_marks,
+        other_marks,
+        relations,
+        operation,
+        brep_mark,
+        other_mark,
+        keep_as_wires,
+    )?;
+    let source_context = &mut other_kernel.unwrap_or(primary_kernel).context;
+    for (vertex, region) in keep_vertices {
+        p1::merge_vertex(
+            brep,
+            other,
+            Some(vertex),
+            Some(region),
+            relations,
+            copy,
+            Some(&mut *source_context),
+        )?;
+    }
+    Ok(())
+}
+
+fn collect_wires_and_shell_vertices(
+    k: &Kernel,
+    other_k: &Kernel,
+    brep: &mut Brep,
+    other: &mut Brep,
+    brep_marks: &mut Marks,
+    other_marks: &mut Marks,
+    relations: &Relations,
+    operation: BooleanOperation,
+    brep_mark: MarkType,
+    other_mark: MarkType,
+    keep_as_wires: &mut Vec<EdgeId>,
+) -> Result<Vec<(VertexId, RegionId)>> {
     keep_as_wires.clear();
     let mut collected = Vec::new();
     let mut done = !removes_primary(operation);
@@ -205,7 +295,7 @@ pub fn process_wires_and_shell_vertices(
 
     for id in other.edges().ids() {
         let is_wire = vertexuse::edge_is_wire(other, id)?;
-        let marked = other_marks.is_marked(k, Entity::Edge(id), other_mark);
+        let marked = other_marks.is_marked(other_k, Entity::Edge(id), other_mark);
         if is_wire && marked {
             match operation {
                 BooleanOperation::Union
@@ -236,7 +326,7 @@ pub fn process_wires_and_shell_vertices(
         )?;
         let Some(region) = region else { continue };
         collect_wire_edges(
-            k,
+            other_k,
             other,
             other_marks,
             Some(id),
@@ -270,7 +360,7 @@ pub fn process_wires_and_shell_vertices(
 
     let mut keep_vertices = Vec::new();
     for v in other.vertices().ids() {
-        if other_marks.is_marked(k, Entity::Vertex(v), other_mark)
+        if other_marks.is_marked(other_k, Entity::Vertex(v), other_mark)
             || !vertex::is_shell_vertex(other, v)?
         {
             continue;
@@ -282,18 +372,7 @@ pub fn process_wires_and_shell_vertices(
             keep_vertices.push((v, region.id));
         }
     }
-    for (vertex, region) in keep_vertices {
-        p1::merge_vertex(
-            brep,
-            other,
-            Some(vertex),
-            Some(region),
-            relations,
-            copy,
-            context.as_deref_mut(),
-        )?;
-    }
-    Ok(())
+    Ok(keep_vertices)
 }
 
 #[cfg(test)]
@@ -320,9 +399,19 @@ mod tests {
                 key: ObjectKey(1_000_000 + u64::from(v.index())),
                 type_code: 16021,
             },
-            destination_key: &|v| ObjectRef {
-                key: ObjectKey(u64::from(v.index())),
-                type_code: 16021,
+            destination_key: &|e| match e {
+                crate::EntityRef::Vertex(v) => ObjectRef {
+                    key: ObjectKey(u64::from(v.index())),
+                    type_code: 16021,
+                },
+                crate::EntityRef::Vertexuse(v) => ObjectRef {
+                    key: ObjectKey(2_000_000 + u64::from(v.index())),
+                    type_code: 16006,
+                },
+                _ => ObjectRef {
+                    key: ObjectKey(3_000_000),
+                    type_code: 16001,
+                },
             },
         }
     }
@@ -382,7 +471,7 @@ mod tests {
         let result = process_wires_and_shell_vertices(
             &k,
             &mut a,
-            &b,
+            &mut b,
             &mut am,
             &mut bm,
             &mut relations,
@@ -436,7 +525,7 @@ mod tests {
                 assert!(process_wires_and_shell_vertices(
                     &k,
                     &mut a,
-                    &b,
+                    &mut b,
                     &mut am,
                     &mut bm,
                     &mut relations,
@@ -463,7 +552,7 @@ mod tests {
                 process_wires_and_shell_vertices(
                     &k,
                     &mut a,
-                    &b,
+                    &mut b,
                     &mut am,
                     &mut bm,
                     &mut relations,

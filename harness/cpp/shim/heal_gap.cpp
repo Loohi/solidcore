@@ -11,6 +11,7 @@
 // can import the graph with that runner's importer; ops whose upstream path would
 // dereference null output -2 instead of calling it.
 #include "sc_shim.h"
+#include "support/topology_fixture.h"
 
 
 #include "StdAfx.h"
@@ -53,6 +54,10 @@
 #include <map>
 #include <vector>
 
+#include "sc_sm.h"
+
+using sc::put_vec;
+
 // SmGap.cpp's (non-static, undeclared) BuildSampleSet helper.
 ULONG sm_AddUniqueGetOrderedIndex(SmTArray<double>& rArray, double sNewElement);
 
@@ -88,13 +93,6 @@ struct Rd
 
 double st(SmStatus s) { return s == SM_SUCCESS ? 0.0 : (double)s; }
 double flg(SmBoolean b) { return b ? 1.0 : 0.0; }
-
-void put_vec(std::vector<double>& o, const SmVector3d& v)
-{
-    o.push_back(v.x);
-    o.push_back(v.y);
-    o.push_back(v.z);
-}
 
 const SmContext& the_context()
 {
@@ -335,7 +333,13 @@ void walk(SmBrep* brep, Graph& g)
     brep->GetRegions(regs);
     for (ULONG i = 0; i < regs.GetSize(); i++)
         g.region(regs[i]);
-    size_t r = 0, s = 0, fu = 0, lu = 0, eu = 0, vu = 0, l = 0, e = 0, f = 0;
+    // SmBrep::GetEdges order is observable (SmShell::GetWireEdges, shell wire ownership), and a
+    // wire owned by a face shell may be unreachable from faces/vertex lists: register it first.
+    SmTArray<SmEdge*> all_edges;
+    brep->GetEdges(all_edges);
+    for (ULONG i = 0; i < all_edges.GetSize(); ++i)
+        g.edge(all_edges[i]);
+    size_t r = 0, s = 0, fu = 0, lu = 0, eu = 0, vu = 0, l = 0, e = 0, f = 0, v = 0;
     bool more = true;
     while (more)
     {
@@ -403,6 +407,10 @@ void walk(SmBrep* brep, Graph& g)
         }
         for (; l < g.loops.size(); l++, more = true)
             g.loopuse(g.loops[l]->GetLoopuse());
+        // the vertex use lists (a list may hold uses no owner chain reaches)
+        for (; v < g.vertices.size(); v++, more = true)
+            for (SmTopology* t : list_of(g.vertices[v]->GetList()))
+                g.vertexuse((SmVertexuse*)t);
         for (; f < g.faces.size(); f++)
             ;
     }
@@ -595,6 +603,12 @@ void export_graph(SmBrep* brep, Graph& g, std::vector<double>& o)
         put_vec(o, p->GetPoint());
         o.push_back((double)p->GetTolerance());
     }
+    // Version 3 shell/region state (infinite region, void flags, wire/vertex shell heads, vertex-use
+    // lists, face-use links), read from the native records by the shared exporter.
+    sc_topology_fixture::append_shell_state(
+        {*brep, g.regions, g.shells, g.faceuses, g.faces, g.loopuses, g.loops, g.edgeuses, g.edges,
+         g.vertexuses, g.vertices},
+        o);
 }
 
 // Builds the B-rep of a B-rep block; nullptr (status in `st`) when construction fails.

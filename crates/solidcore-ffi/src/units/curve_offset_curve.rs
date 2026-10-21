@@ -38,6 +38,7 @@
 //! up to [`MAX_DERIVS`], and no `Copy` of an owning offset whose base cannot be copied
 //! (a Hermite curve: upstream then shares and deletes it twice).
 
+use crate::validate::{bad, NOW, NOZ};
 use crate::{call_with_buffer, FfiError};
 
 /// Largest control point index `n`.
@@ -55,9 +56,6 @@ pub const MAX_PROBES: usize = 32;
 pub const MAX_REVERSALS: usize = 4;
 /// Most bytes of a database stream.
 pub const MAX_DB_BYTES: usize = 1 << 16;
-
-const NOZ: f64 = f64::MAX;
-const NOW: f64 = -f64::MAX;
 
 /// One shim operation (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,48 +89,14 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
+crate::reader::unit_reader!(MAX_COORD);
 
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn num(&mut self) -> Result<f64, FfiError> {
-        let v = self
-            .input
-            .get(self.at)
-            .copied()
-            .ok_or_else(|| bad("input too short"))?;
-        self.at += 1;
-        Ok(v)
-    }
-
-    /// A finite value of magnitude at most [`MAX_COORD`].
-    fn finite(&mut self) -> Result<f64, FfiError> {
-        let v = self.num()?;
-        if !v.is_finite() || v.abs() > MAX_COORD {
-            return Err(bad(format!("value {v} not finite or too large")));
-        }
-        Ok(v)
-    }
-
+impl Reader<'_> {
     fn vec3(&mut self) -> Result<(), FfiError> {
         for _ in 0..3 {
             self.finite()?;
         }
         Ok(())
-    }
-
-    fn index(&mut self, max: usize) -> Result<usize, FfiError> {
-        let v = self.num()?;
-        if v.fract() != 0.0 || v < 0.0 || v > max as f64 {
-            return Err(bad(format!("bad index/count {v}")));
-        }
-        Ok(v as usize)
     }
 
     fn int(&mut self, min: i64, max: i64) -> Result<i64, FfiError> {
@@ -141,27 +105,6 @@ impl<'a> Reader<'a> {
             return Err(bad(format!("bad integer {v}")));
         }
         Ok(v as i64)
-    }
-
-    fn flag(&mut self) -> Result<bool, FfiError> {
-        Ok(self.index(1)? == 1)
-    }
-
-    fn take(&mut self, k: usize) -> Result<&'a [f64], FfiError> {
-        let end = self.at.checked_add(k).ok_or_else(|| bad("overflow"))?;
-        let s = self
-            .input
-            .get(self.at..end)
-            .ok_or_else(|| bad("input too short"))?;
-        self.at = end;
-        Ok(s)
-    }
-
-    fn done(&self) -> Result<(), FfiError> {
-        if self.at != self.input.len() {
-            return Err(bad("trailing input"));
-        }
-        Ok(())
     }
 }
 
@@ -267,7 +210,7 @@ fn probes(rd: &mut Reader<'_>) -> Result<(), FfiError> {
 ///
 /// [`FfiError::InvalidArgument`] for anything the shim must not see.
 pub fn validate(op: Op, input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     if op == Op::ReadDb {
         rd.index(1)?;
         rd.index(64)?;

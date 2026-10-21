@@ -861,7 +861,7 @@ impl RotationalSweepGeometry {
         // Create corresponding analytics if requested
         if self.base.make_analytics {
             // Copy pNewSurf, when possible as an analytic surface
-            new_surf = new_surf.copy_and_add_analytics()?;
+            new_surf = new_surf.copy_and_add_analytics(k)?;
         }
 
         // eStartTrimCurveParam fixes which of the umin/vmin line of the surface
@@ -1121,7 +1121,7 @@ impl RotationalSweepGeometry {
             face::p2::surface(b, f)?.ok_or_else(|| SolidError::null_pointer(OP_FACE_SAME))?;
 
         // Copy pOriginalFaceSurface, when possible as an analytic surface
-        let mut new_face_surf = original_face_surface.copy_and_add_analytics()?;
+        let mut new_face_surf = original_face_surface.copy_and_add_analytics(k)?;
 
         let angle_rad = self.angle * PI / 180.0;
 
@@ -1172,11 +1172,17 @@ mod tests {
     /// `MakeShellVertex` + `MakeWireEdgeVertex` link it.
     fn wire(a: Point3, c: Point3) -> (Brep, EdgeId) {
         let mut br = Brep::new();
-        let r = br.add_region_record(Region { in_brep: true }).unwrap();
+        let r = br
+            .add_region_record(Region {
+                in_brep: true,
+                ..Region::default()
+            })
+            .unwrap();
         let s = br
             .add_shell_record(Shell {
                 faces: Vec::new(),
                 region: Some(r),
+                ..Shell::default()
             })
             .unwrap();
         let v0 = br

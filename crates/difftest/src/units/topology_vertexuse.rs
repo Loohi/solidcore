@@ -25,6 +25,7 @@ use solidcore::geom::attribute::{AttributeStore, ObjectKey};
 use solidcore::geom::extent1d::Extent1d;
 use solidcore::geom::extent2d::Extent2d;
 use solidcore::geom::object::{NotifyOperation, ObjectRef};
+use solidcore::geom::solution_array::ObjectKind;
 use solidcore::geom::vector2d::{Point2, Vec2};
 use solidcore::geom::vector3d::Vec3;
 use solidcore::kernel::Kernel;
@@ -34,16 +35,16 @@ use solidcore::nurbs::b_spline_surface_n_lib::p2::OrientType;
 use solidcore::nurbs::crv_basic::Curve;
 use solidcore::nurbs::math::{CPoint, NOW, NOZ};
 use solidcore::nurbs::srf_basic::Surface as NlSurface;
-use solidcore::geom::solution_array::ObjectKind;
-use solidcore::surface::surface::p2::{DropCurveFail, B_SPLINE_SURFACE_TYPE};
 use solidcore::surface::plane::Plane;
+use solidcore::surface::surface::p2::{DropCurveFail, B_SPLINE_SURFACE_TYPE};
 use solidcore::surface::surface::Surface;
+use solidcore::topology::shell::{ShellMembers, ShellType};
 use solidcore::topology::topology::Topology;
 use solidcore::topology::vertexuse as vu1;
 use solidcore::topology::{
-    Brep, Edge, EdgeId, Edgeuse, EdgeuseId, EdgeuseOwner, Face, FaceId, Faceuse, FaceuseId,
-    Loop, LoopId, Loopuse, LoopuseId, LoopuseStart, ObjectHandle, Region, RegionId, Shell,
-    ShellId, Vertex, VertexId, Vertexuse, VertexuseId, VertexuseOwner,
+    Brep, Edge, EdgeId, Edgeuse, EdgeuseId, EdgeuseOwner, Face, FaceId, Faceuse, FaceuseId, Loop,
+    LoopId, Loopuse, LoopuseId, LoopuseStart, ObjectHandle, Region, RegionId, Shell, ShellId,
+    Vertex, VertexId, Vertexuse, VertexuseId, VertexuseOwner,
 };
 use solidcore::{EntityRef, SolidError};
 use solidcore_ffi::units::topology_vertexuse::{self as ffi, Op};
@@ -64,7 +65,9 @@ const EDGEUSE_TYPE: i64 = 16005;
 const VERTEXUSE_TYPE: i64 = 16006;
 
 /// The type codes `IsKindOf` is asked about (as the shim's `KIND_TYPES`).
-const KIND_TYPES: [i64; 9] = [16006, 16005, 16001, 16010, 12060, 11001, 16013, 16004, 16999];
+const KIND_TYPES: [i64; 9] = [
+    16006, 16005, 16001, 16010, 12060, 11001, 16013, 16004, 16999,
+];
 
 /// "Upstream would dereference null" in an output slot.
 const NULL_DEREF: i64 = -2;
@@ -75,24 +78,24 @@ const NULL_DEREF: i64 = -2;
 /// NOZ` 2D), degree, knots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CrvIn {
-    dim: u64,
-    cpts: Vec<[f64; 4]>,
-    p: usize,
-    u: Vec<f64>,
+    pub(crate) dim: u64,
+    pub(crate) cpts: Vec<[f64; 4]>,
+    pub(crate) p: usize,
+    pub(crate) u: Vec<f64>,
 }
 
 /// A B-spline surface.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct BssIn {
     #[serde(default)]
-    oob: bool,
+    pub(crate) oob: bool,
     #[serde(default)]
-    form: u8,
-    net: Vec<Vec<[f64; 4]>>,
-    p: usize,
-    q: usize,
-    u: Vec<f64>,
-    v: Vec<f64>,
+    pub(crate) form: u8,
+    pub(crate) net: Vec<Vec<[f64; 4]>>,
+    pub(crate) p: usize,
+    pub(crate) q: usize,
+    pub(crate) u: Vec<f64>,
+    pub(crate) v: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,24 +114,58 @@ pub(crate) enum BrepIn {
         #[serde(default)]
         rebuild: bool,
     },
-    Wire { curve: CrvIn, t0: f64, t1: f64 },
-    Face { surface: SrfIn, dom: [f64; 4] },
+    Wire {
+        curve: CrvIn,
+        t0: f64,
+        t1: f64,
+    },
+    Face {
+        surface: SrfIn,
+        dom: [f64; 4],
+    },
     Network,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum OpIn {
-    VuQuery { vu: i64 },
-    Connected { vu: i64, ty: i64, index: i64 },
+    VuQuery {
+        vu: i64,
+    },
+    Connected {
+        vu: i64,
+        ty: i64,
+        index: i64,
+    },
     /// `which`: 0 `GetVertexEdgeGap`, 1 `GetVertexFaceGap`, 2 `CalcVertexEdgeGap`, 3
     /// `CalcVertexFaceGap`, 4 `InitVertexFaceGap`.
-    Gaps { vu: i64, which: u8, flag: bool, want_out: bool },
-    Notify { vu: i64, operation: u8 },
-    UvPoint { vu: i64, ok_to_make: bool },
-    UvSector { vu: i64, ok_to_make: bool },
-    MissingSeam { vu: i64, want_u: bool, want_v: bool, uv_ok: bool },
-    OnPole { vu: i64 },
+    Gaps {
+        vu: i64,
+        which: u8,
+        flag: bool,
+        want_out: bool,
+    },
+    Notify {
+        vu: i64,
+        operation: u8,
+    },
+    UvPoint {
+        vu: i64,
+        ok_to_make: bool,
+    },
+    UvSector {
+        vu: i64,
+        ok_to_make: bool,
+    },
+    MissingSeam {
+        vu: i64,
+        want_u: bool,
+        want_v: bool,
+        uv_ok: bool,
+    },
+    OnPole {
+        vu: i64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,8 +182,15 @@ struct Inputs {
 // ---- encoding ---------------------------------------------------------------------------
 
 pub(crate) fn push_curve(v: &mut Vec<f64>, c: &CrvIn) -> Result<(), HarnessError> {
-    let n = c.cpts.len().checked_sub(1).ok_or_else(|| harness("curve without points"))?;
-    let m = c.u.len().checked_sub(1).ok_or_else(|| harness("curve without knots"))?;
+    let n = c
+        .cpts
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| harness("curve without points"))?;
+    let m =
+        c.u.len()
+            .checked_sub(1)
+            .ok_or_else(|| harness("curve without knots"))?;
     v.extend([c.dim as f64, n as f64, c.p as f64, m as f64]);
     for p in &c.cpts {
         v.extend(p);
@@ -163,7 +207,11 @@ pub(crate) fn push_surface(v: &mut Vec<f64>, s: &SrfIn) -> Result<(), HarnessErr
             v.extend(n);
         }
         SrfIn::Bspline(b) => {
-            let n = b.net.len().checked_sub(1).ok_or_else(|| harness("empty net"))?;
+            let n = b
+                .net
+                .len()
+                .checked_sub(1)
+                .ok_or_else(|| harness("empty net"))?;
             let m = b
                 .net
                 .first()
@@ -172,6 +220,16 @@ pub(crate) fn push_surface(v: &mut Vec<f64>, s: &SrfIn) -> Result<(), HarnessErr
             if b.net.iter().any(|r| r.len() != m + 1) {
                 return Err(harness("ragged net"));
             }
+            let mu = b
+                .u
+                .len()
+                .checked_sub(1)
+                .ok_or_else(|| harness("surface without u knots"))?;
+            let mv = b
+                .v
+                .len()
+                .checked_sub(1)
+                .ok_or_else(|| harness("surface without v knots"))?;
             v.extend([
                 0.0,
                 f64::from(u8::from(b.oob)),
@@ -180,8 +238,8 @@ pub(crate) fn push_surface(v: &mut Vec<f64>, s: &SrfIn) -> Result<(), HarnessErr
                 m as f64,
                 b.p as f64,
                 b.q as f64,
-                (b.u.len() - 1) as f64,
-                (b.v.len() - 1) as f64,
+                mu as f64,
+                mv as f64,
             ]);
             for row in &b.net {
                 for p in row {
@@ -252,7 +310,10 @@ fn export(i: &Inputs) -> Result<Vec<f64>, HarnessError> {
 
 /// A build failure as an operation error.
 fn build_failure(export: &[f64]) -> Output {
-    Output::err(format!("brep_build_status_{}", export.get(1).copied().unwrap_or(0.0)))
+    Output::err(format!(
+        "brep_build_status_{}",
+        export.get(1).copied().unwrap_or(0.0)
+    ))
 }
 
 fn ints(v: &[f64]) -> Vec<i64> {
@@ -291,7 +352,9 @@ impl Rd<'_> {
 fn opt<T>(i: i64, f: impl Fn(u32) -> T) -> Result<Option<T>, HarnessError> {
     match i {
         -1 => Ok(None),
-        x if x >= 0 => Ok(Some(f(u32::try_from(x).map_err(|_| harness("index overflow"))?))),
+        x if x >= 0 => Ok(Some(f(
+            u32::try_from(x).map_err(|_| harness("index overflow"))?
+        ))),
         x => Err(harness(format!("unregistered pointer ({x}) in export"))),
     }
 }
@@ -355,10 +418,14 @@ fn read_curve(rd: &mut Rd<'_>, uv: bool) -> Result<Option<SmCurve>, HarnessError
     Ok(Some(SmCurve::from(base)))
 }
 
-fn read_surface(rd: &mut Rd<'_>) -> Result<(Option<Surface>, bool), HarnessError> {
+/// An exported surface block: the surface, whether it was imported exactly, and the
+/// exported `SmBSplineSurface` subclass type code (`None` for a plane or no surface).
+type SurfaceBlock = (Option<Surface>, bool, Option<i64>);
+
+fn read_surface(rd: &mut Rd<'_>) -> Result<SurfaceBlock, HarnessError> {
     let kind = rd.num()?;
     if kind == -1.0 {
-        return Ok((None, true));
+        return Ok((None, true, None));
     }
     if kind == 1.0 {
         // an SmPlane: origin, axes, scales, analytic domain
@@ -367,14 +434,15 @@ fn read_surface(rd: &mut Rd<'_>) -> Result<(Option<Surface>, bool), HarnessError
         let y = Vec3::new(rd.num()?, rd.num()?, rd.num()?);
         let sc = Vec2::new(rd.num()?, rd.num()?);
         let d = Extent2d::from_bounds(rd.num()?, rd.num()?, rd.num()?, rd.num()?);
-        return Ok((Some(Surface::from(Plane::new(o, x, y, sc, &d))), true));
+        return Ok((Some(Surface::from(Plane::new(o, x, y, sc, &d))), true, None));
     }
     if kind != 0.0 {
         return Err(harness("export: a surface is not a B-spline or plane"));
     }
     // an SmBSplineSurface subclass other than SmPlane: only its B-spline part is
     // imported, so its evaluations are not the upstream ones
-    let exact = rd.num()? == B_SPLINE_SURFACE_TYPE as f64;
+    let ty = rd.idx()?;
+    let exact = ty == B_SPLINE_SURFACE_TYPE;
     let oob = rd.num()? != 0.0;
     let form = rd.num()?;
     let n = rd.usize()?;
@@ -393,37 +461,131 @@ fn read_surface(rd: &mut Rd<'_>) -> Result<(Option<Surface>, bool), HarnessError
     }
     let u = (0..=r).map(|_| rd.num()).collect::<Result<Vec<_>, _>>()?;
     let v = (0..=s).map(|_| rd.num()).collect::<Result<Vec<_>, _>>()?;
-    let nl = NlSurface::new(net, p, q, u, v).map_err(|e| harness(format!("export surface: {e}")))?;
+    let nl =
+        NlSurface::new(net, p, q, u, v).map_err(|e| harness(format!("export surface: {e}")))?;
     let mut b = BSplineSurface::from_nurb(nl, false);
     *b.out_of_bounds_enabled_mut() = oob;
-    let form = BSplineSurfaceForm::from_code(form as u64).ok_or_else(|| harness("bad surface form"))?;
+    let form =
+        BSplineSurfaceForm::from_code(form as u64).ok_or_else(|| harness("bad surface form"))?;
     b.set_b_spline_surface_form(form);
-    Ok((Some(Surface::from(b)), exact))
+    Ok((Some(Surface::from(b)), exact, Some(ty)))
+}
+
+/// Reads an exported region record's shell list (`SmRegion::m_pList` from its head).
+pub(crate) fn region_shell_list(list: Vec<i64>) -> Result<Vec<ShellId>, HarnessError> {
+    list.into_iter()
+        .map(|x| opt(x, ShellId::from_index)?.ok_or_else(|| harness("null shell")))
+        .collect()
+}
+
+/// An exported shell record's type and face-use list (`m_tShellType`, `m_pList`).
+pub(crate) fn shell_members(
+    ty: i64,
+    list: Vec<i64>,
+) -> Result<(ShellType, ShellMembers), HarnessError> {
+    let list = list
+        .into_iter()
+        .map(|x| opt(x, FaceuseId::from_index)?.ok_or_else(|| harness("null face use")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let members = if list.is_empty() {
+        ShellMembers::Empty
+    } else {
+        ShellMembers::Faceuses(list)
+    };
+    Ok((ShellType::from_code(ty), members))
+}
+
+/// Reads the version-3 shell/region state block that the shims append after the vertices
+/// (`sc_topology_fixture::append_shell_state`, shared with `topology.edgeuse_p1`'s
+/// export): the infinite region, each region's raw void flag, each wire or vertex shell's
+/// list head, each vertex's use list and each face use's `m_pNext` / `m_pLast`. Every value
+/// is read from the native record; nothing is inferred. Returns the infinite region.
+pub(crate) fn read_shell_state(
+    ex: &[f64],
+    at: &mut usize,
+    regions: &mut [Region],
+    shells: &mut [Shell],
+    vertices: &mut [Vertex],
+    faceuses: &mut [Faceuse],
+) -> Result<Option<RegionId>, HarnessError> {
+    let mut rd = Rd { v: ex, at: *at };
+    if rd.idx()? != 3 {
+        return Err(harness("export: unsupported shell extension version"));
+    }
+    let infinite_region = opt(rd.idx()?, RegionId::from_index)?;
+    for region in regions.iter_mut() {
+        region.is_void = i32::try_from(rd.idx()?)
+            .map_err(|_| harness("export: void flag outside native int range"))?;
+    }
+    for shell in shells.iter_mut() {
+        let head = rd.idx()?;
+        if shell.is_wire_shell() {
+            shell.members = opt(head, EdgeuseId::from_index)?
+                .map_or(ShellMembers::Empty, ShellMembers::Edgeuse);
+        } else if shell.is_vertex_shell() {
+            shell.members = opt(head, VertexuseId::from_index)?
+                .map_or(ShellMembers::Empty, ShellMembers::Vertexuse);
+        } else if head != -1 {
+            return Err(harness("export: unexpected shell head"));
+        }
+    }
+    for vertex in vertices.iter_mut() {
+        vertex.vertexuses = rd
+            .list()?
+            .into_iter()
+            .map(|x| opt(x, VertexuseId::from_index)?.ok_or_else(|| harness("null vertex use")))
+            .collect::<Result<Vec<_>, _>>()?;
+    }
+    for faceuse in faceuses.iter_mut() {
+        faceuse.sibling_links = Some((
+            opt(rd.idx()?, FaceuseId::from_index)?,
+            opt(rd.idx()?, FaceuseId::from_index)?,
+        ));
+    }
+    *at = rd.at;
+    Ok(infinite_region)
 }
 
 /// Builds the Rust B-rep from the shim's export (see the module docs), with whether
 /// each face's surface was imported exactly.
 pub(crate) fn import(ex: &[f64]) -> Result<(Brep, Vec<bool>), HarnessError> {
+    import_with_types(ex).map(|(b, exact, _)| (b, exact))
+}
+
+/// An imported B-rep with, per face, whether its surface was imported exactly and its
+/// exported surface subclass type code (`None` for a plane or no surface).
+pub(crate) type TypedImport = (Brep, Vec<bool>, Vec<Option<i64>>);
+
+/// [`import`], also with each face's exported surface subclass type code.
+pub(crate) fn import_with_types(ex: &[f64]) -> Result<TypedImport, HarnessError> {
     let c = ffi::counts(ex).ok_or_else(|| harness("import of a failed build"))?;
     let [n_r, n_s, n_fu, n_f, n_lu, n_l, n_eu, n_e, n_vu, n_v] = c;
     let mut rd = Rd { v: ex, at: 1 };
     let validate_only = rd.num()? != 0.0;
     rd.at = 12;
 
+    // Region shell lists, shell types and face-use lists are the native lists from
+    // their heads; the void flags, the infinite region, the wire/vertex shell heads, the
+    // vertex-use lists and the face-use links follow the vertices (`read_shell_state`).
     let mut regions = Vec::new();
     for _ in 0..n_r {
         let in_brep = rd.num()? != 0.0;
-        rd.list()?;
-        regions.push(Region { in_brep });
+        let shells = region_shell_list(rd.list()?)?;
+        regions.push(Region {
+            in_brep,
+            shells,
+            ..Region::default()
+        });
     }
     let mut shells = Vec::new();
     for _ in 0..n_s {
         let region = opt(rd.idx()?, RegionId::from_index)?;
-        rd.idx()?;
-        rd.list()?;
+        let (shell_type, members) = shell_members(rd.idx()?, rd.list()?)?;
         shells.push(Shell {
             faces: Vec::new(),
             region,
+            shell_type,
+            members,
         });
     }
     let mut faceuses = Vec::new();
@@ -443,13 +605,16 @@ pub(crate) fn import(ex: &[f64]) -> Result<(Brep, Vec<bool>), HarnessError> {
             mate,
             orientation,
             loopuses,
+            sibling_links: None,
         });
     }
     let mut surfaces = Vec::new();
     let mut exact_faces = Vec::new();
+    let mut face_types = Vec::new();
     for f in 0..n_f {
-        let (mut surface, exact) = read_surface(&mut rd)?;
+        let (mut surface, exact, ty) = read_surface(&mut rd)?;
         exact_faces.push(exact);
+        face_types.push(ty);
         let faceuse = opt(rd.idx()?, FaceuseId::from_index)?;
         let dom = Extent2d::from_bounds(rd.num()?, rd.num()?, rd.num()?, rd.num()?);
         let rect = rd.idx()?;
@@ -521,7 +686,8 @@ pub(crate) fn import(ex: &[f64]) -> Result<(Brep, Vec<bool>), HarnessError> {
             uv_trim_curve,
             ..Edgeuse::default()
         };
-        let me = EdgeuseId::from_index(u32::try_from(edgeuses.len()).map_err(|_| harness("overflow"))?);
+        let me =
+            EdgeuseId::from_index(u32::try_from(edgeuses.len()).map_err(|_| harness("overflow"))?);
         if has_fail {
             let f = DropCurveFail::<ObjectHandle> {
                 fail_status: i32::try_from(fail_status).map_err(|_| harness("fail status"))?,
@@ -599,6 +765,14 @@ pub(crate) fn import(ex: &[f64]) -> Result<(Brep, Vec<bool>), HarnessError> {
             ..Vertex::default()
         });
     }
+    let infinite_region = read_shell_state(
+        ex,
+        &mut rd.at,
+        &mut regions,
+        &mut shells,
+        &mut vertices,
+        &mut faceuses,
+    )?;
     if rd.at != ex.len() {
         return Err(harness("export: trailing data"));
     }
@@ -606,6 +780,7 @@ pub(crate) fn import(ex: &[f64]) -> Result<(Brep, Vec<bool>), HarnessError> {
     // assemble (skeleton fields filled minimally)
     let mut b = Brep::new();
     b.set_validate_only(validate_only);
+    b.set_infinite_region_record(infinite_region);
     for r in regions {
         b.add_region_record(r).map_err(|e| harness(e.to_string()))?;
     }
@@ -627,7 +802,10 @@ pub(crate) fn import(ex: &[f64]) -> Result<(Brep, Vec<bool>), HarnessError> {
         b.add_shell_record(s).map_err(|e| harness(e.to_string()))?;
     }
     for (f, (surface, faceuse, uv_domain, rect, tolerance)) in surfaces.into_iter().enumerate() {
-        let shell = face_shells.get(f).copied().unwrap_or(ShellId::from_index(0));
+        let shell = face_shells
+            .get(f)
+            .copied()
+            .unwrap_or(ShellId::from_index(0));
         b.add_face_record(Face {
             surface,
             faceuse,
@@ -672,26 +850,22 @@ pub(crate) fn import(ex: &[f64]) -> Result<(Brep, Vec<bool>), HarnessError> {
         b.add_vertex_record(v).map_err(|e| harness(e.to_string()))?;
     }
     for fu in faceuses {
-        b.add_faceuse_record(fu).map_err(|e| harness(e.to_string()))?;
+        b.add_faceuse_record(fu)
+            .map_err(|e| harness(e.to_string()))?;
     }
     for lu in loopuses {
-        b.add_loopuse_record(lu).map_err(|e| harness(e.to_string()))?;
+        b.add_loopuse_record(lu)
+            .map_err(|e| harness(e.to_string()))?;
     }
     for eu in edgeuses {
-        b.add_edgeuse_record(eu).map_err(|e| harness(e.to_string()))?;
+        b.add_edgeuse_record(eu)
+            .map_err(|e| harness(e.to_string()))?;
     }
     for vu in vertexuses {
-        b.add_vertexuse_record(vu).map_err(|e| harness(e.to_string()))?;
+        b.add_vertexuse_record(vu)
+            .map_err(|e| harness(e.to_string()))?;
     }
-    // the vertex use lists are not exported: each vertex lists its uses in arena order
-    let uses: Vec<(VertexuseId, Option<VertexId>)> =
-        b.vertexuses().iter().map(|(id, r)| (id, r.vertex)).collect();
-    for (id, v) in uses {
-        if let Some(v) = v {
-            b.vertex_mut(v).map_err(|e| harness(e.to_string()))?.vertexuses.push(id);
-        }
-    }
-    Ok((b, exact_faces))
+    Ok((b, exact_faces, face_types))
 }
 
 fn id<I: Copy>(o: Option<I>, f: impl Fn(I) -> u32) -> i64 {
@@ -747,7 +921,9 @@ const FILES: [&str; 15] = [
 
 fn clamped_knots(rng: &mut Rng, p: usize, n: usize, a: f64, b: f64) -> Vec<f64> {
     let inner = n - p;
-    let mut ks: Vec<f64> = (0..inner).map(|_| a + (b - a) * rng.uniform(0.05, 0.95)).collect();
+    let mut ks: Vec<f64> = (0..inner)
+        .map(|_| a + (b - a) * rng.uniform(0.05, 0.95))
+        .collect();
     ks.sort_by(f64::total_cmp);
     let mut u = vec![a; p + 1];
     u.extend(ks);
@@ -755,7 +931,7 @@ fn clamped_knots(rng: &mut Rng, p: usize, n: usize, a: f64, b: f64) -> Vec<f64> 
     u
 }
 
-fn gen_curve(rng: &mut Rng, dim: u64, scale: f64) -> CrvIn {
+pub(crate) fn gen_curve(rng: &mut Rng, dim: u64, scale: f64) -> CrvIn {
     let p = 1 + rng.below(3) as usize;
     let n = p + rng.below(4) as usize;
     let rational = rng.chance(0.2);
@@ -765,11 +941,19 @@ fn gen_curve(rng: &mut Rng, dim: u64, scale: f64) -> CrvIn {
             let k = if rational { w } else { 1.0 };
             let x = (i as f64 + rng.uniform(-0.3, 0.3)) * scale;
             let y = rng.uniform(-1.0, 1.0) * scale;
-            let z = if dim == 2 { NOZ } else { rng.uniform(-1.0, 1.0) * scale * k };
+            let z = if dim == 2 {
+                NOZ
+            } else {
+                rng.uniform(-1.0, 1.0) * scale * k
+            };
             [x * k, y * k, z, w]
         })
         .collect();
-    let (a, b) = if rng.chance(0.5) { (0.0, 1.0) } else { (rng.uniform(-5.0, 0.0), rng.uniform(1.0, 6.0)) };
+    let (a, b) = if rng.chance(0.5) {
+        (0.0, 1.0)
+    } else {
+        (rng.uniform(-5.0, 0.0), rng.uniform(1.0, 6.0))
+    };
     CrvIn {
         dim,
         cpts,
@@ -797,7 +981,11 @@ pub(crate) fn gen_surface(rng: &mut Rng) -> SrfIn {
         .map(|i| {
             (0..=m)
                 .map(|j| {
-                    let (x, y) = if pinch && i == 0 { (0.0, 0.0) } else { (i as f64, j as f64) };
+                    let (x, y) = if pinch && i == 0 {
+                        (0.0, 0.0)
+                    } else {
+                        (i as f64, j as f64)
+                    };
                     [x * scale, y * scale, rng.uniform(-0.5, 0.5) * scale, NOW]
                 })
                 .collect()
@@ -834,11 +1022,17 @@ pub(crate) fn gen_brep(rng: &mut Rng) -> BrepIn {
         },
         6 => {
             let c = gen_curve(rng, 3, 1.0);
-            let (a, b) = (c.u.first().copied().unwrap_or(0.0), c.u.last().copied().unwrap_or(1.0));
+            let (a, b) = (
+                c.u.first().copied().unwrap_or(0.0),
+                c.u.last().copied().unwrap_or(1.0),
+            );
             let (t0, t1) = if rng.chance(0.5) {
                 (a, b)
             } else {
-                (a + (b - a) * rng.uniform(0.0, 0.3), b - (b - a) * rng.uniform(0.0, 0.3))
+                (
+                    a + (b - a) * rng.uniform(0.0, 0.3),
+                    b - (b - a) * rng.uniform(0.0, 0.3),
+                )
             };
             BrepIn::Wire { curve: c, t0, t1 }
         }
@@ -865,7 +1059,6 @@ pub(crate) fn gen_brep(rng: &mut Rng) -> BrepIn {
 fn gen_sel(rng: &mut Rng) -> i64 {
     rng.below(1 << 20) as i64
 }
-
 
 // ---- ops ---------------------------------------------------------------------------------
 
@@ -994,7 +1187,10 @@ fn inexact(op: &OpIn, b: &Brep, exact: &[bool]) -> bool {
         | OpIn::MissingSeam { vu, .. }
         | OpIn::OnPole { vu } => *vu,
     };
-    if matches!(op, OpIn::VuQuery { .. } | OpIn::Connected { .. } | OpIn::Notify { .. }) {
+    if matches!(
+        op,
+        OpIn::VuQuery { .. } | OpIn::Connected { .. } | OpIn::Notify { .. }
+    ) {
         return false;
     }
     let Ok(Some(fu)) = vu1::faceuse(b, VertexuseId::from_index(vu as u32)) else {
@@ -1158,11 +1354,10 @@ fn run_rust_op(b: &mut Brep, op: &OpIn) -> Result<Output, Fail> {
             let v = vid(*vu);
             let mut out = Vec::new();
             let r = match which {
-                0 => vu1::vertex_edge_gap(b, v, *f).map(|g| vec![flag(g.is_some())]),
+                0 => vu1::vertex_edge_gap(&k, b, v, *f).map(|g| vec![flag(g.is_some())]),
                 1 => vu1::vertex_face_gap(&k, b, v, *f).map(|g| vec![flag(g.is_some())]),
-                2 => vu1::calc_vertex_edge_gap(b, v, *want_out, *f).map(|g| {
-                    vec![0.0, g.map_or(-1.0, |g| flag(g.is_init()))]
-                }),
+                2 => vu1::calc_vertex_edge_gap(&k, b, v, *want_out, *f)
+                    .map(|g| vec![0.0, g.map_or(-1.0, |g| flag(g.is_init()))]),
                 3 => match vu1::calc_vertex_face_gap(&k, b, v, *want_out, *f) {
                     Ok(g) => Ok(vec![0.0, g.map_or(-1.0, |g| flag(g.is_init()))]),
                     Err(e @ SolidError::Upstream { .. }) => {
@@ -1206,22 +1401,27 @@ fn run_rust_op(b: &mut Brep, op: &OpIn) -> Result<Output, Fail> {
             gap_states(b, &mut out);
             out
         }
-        OpIn::UvPoint { vu, ok_to_make } => match vu1::compute_uv_point(&k, b, vid(*vu), *ok_to_make)
-        {
-            Ok(p) => vec![0.0, p.x, p.y],
-            Err(SolidError::InvalidInput { .. }) => vec![NULL_DEREF as f64],
-            Err(e) => vec![
-                status_of(&e)?,
-                solidcore::math::UNDEF_DOUBLE,
-                solidcore::math::UNDEF_DOUBLE,
-            ],
-        },
+        OpIn::UvPoint { vu, ok_to_make } => {
+            match vu1::compute_uv_point(&k, b, vid(*vu), *ok_to_make) {
+                Ok(p) => vec![0.0, p.x, p.y],
+                Err(SolidError::InvalidInput { .. }) => vec![NULL_DEREF as f64],
+                Err(e) => vec![
+                    status_of(&e)?,
+                    solidcore::math::UNDEF_DOUBLE,
+                    solidcore::math::UNDEF_DOUBLE,
+                ],
+            }
+        }
         OpIn::UvSector { vu, ok_to_make } => {
             match vu1::compute_uv_sector(&k, b, vid(*vu), *ok_to_make) {
                 Ok(s) => {
                     let io = &s.io;
                     let mut out = vec![
-                        if s.success { 0.0 } else { f64::from(solidcore::error::SM_ERR) },
+                        if s.success {
+                            0.0
+                        } else {
+                            f64::from(solidcore::error::SM_ERR)
+                        },
                         id(io.vertexuse, VertexuseId::index) as f64,
                         id(io.beg_edgeuse, EdgeuseId::index) as f64,
                         id(io.end_edgeuse, EdgeuseId::index) as f64,
@@ -1287,7 +1487,9 @@ fn run_rust_op(b: &mut Brep, op: &OpIn) -> Result<Output, Fail> {
 // ---- generated ops ----------------------------------------------------------------------
 
 fn gen_op(rng: &mut Rng) -> OpIn {
-    let types = [16012, 16013, 16022, 16002, 16004, 16003, 16005, 16016, 16006, 16021, 16011, 7];
+    let types = [
+        16012, 16013, 16022, 16002, 16004, 16003, 16005, 16016, 16006, 16021, 16011, 7,
+    ];
     let vu = gen_sel(rng);
     match rng.below(20) {
         0..=3 => OpIn::VuQuery { vu },
@@ -1346,5 +1548,44 @@ impl UnitDiff for Runner {
             op,
         };
         serde_json::to_value(i).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn surface_encoding_rejects_empty_knots_before_writing() {
+        for (u_empty, v_empty, message) in [
+            (true, false, "surface without u knots"),
+            (false, true, "surface without v knots"),
+            (true, true, "surface without u knots"),
+        ] {
+            let surface = SrfIn::Bspline(BssIn {
+                oob: false,
+                form: 0,
+                net: vec![
+                    vec![[0.0, 0.0, 0.0, NOW], [0.0, 1.0, 0.0, NOW]],
+                    vec![[1.0, 0.0, 0.0, NOW], [1.0, 1.0, 0.0, NOW]],
+                ],
+                p: 1,
+                q: 1,
+                u: if u_empty {
+                    vec![]
+                } else {
+                    vec![0.0, 0.0, 1.0, 1.0]
+                },
+                v: if v_empty {
+                    vec![]
+                } else {
+                    vec![0.0, 0.0, 1.0, 1.0]
+                },
+            });
+            let mut encoded = vec![42.0];
+            let error = push_surface(&mut encoded, &surface).unwrap_err();
+            assert_eq!(error.to_string(), message);
+            assert_eq!(encoded, vec![42.0]);
+        }
     }
 }

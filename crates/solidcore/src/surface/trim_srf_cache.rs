@@ -804,7 +804,7 @@ impl<O: Copy + PartialEq> TrimSrfCache<O> {
         dir: SurfParamType,
     ) -> Result<(NodeId, NodeId)> {
         const OP: &str = "surface::trim_srf_cache::TrimSrfCache::subdivide_node";
-        if let Some((node1, node2)) = self.base.subdivide_node_split(node, dir, true)? {
+        if let Some((node1, node2)) = self.base.subdivide_node_split(k, node, dir, true)? {
             if self.base.aux(node)?.poly_edge_list.is_empty() {
                 // for every edge use in the parent node, last first
                 while let Some(eu) = self.base.aux(node)?.edgeuse_list.last().copied() {
@@ -1085,10 +1085,13 @@ fn map_to_2d(tol_3d: f64, uv: Point2, dir: Vec2, surface: &Surface) -> Result<f6
 
 /// `SmTol::GetZoneTol3d(pFace)`.
 fn face_zone_tol_3d<O>(_face: O) -> Result<f64> {
-    // UNPORTED(topology.brep_p1): SmTol::GetZoneTol3d(const SmObject*)
+    // UNPORTED(geom.tol): SmTol::GetZoneTol3d(const SmObject*) on an opaque handle. Every
+    // arm it dispatches to is ported (topology::{vertex, edge, face::p2, edgeuse::p1}::tolerance,
+    // Brep::tolerance) but each takes `&Brep` and none is in scope here; wire once this code
+    // receives the owning B-rep
     Err(SolidError::unported(
         "SmTol::GetZoneTol3d(const SmObject*)",
-        "topology.brep_p1",
+        "geom.tol",
     ))
 }
 
@@ -1119,11 +1122,9 @@ fn face_brep_editing_enabled<O>(_face: O) -> Result<bool> {
 
 /// The temporary `GetFace()->GetBrep()->m_bEditingEnabled` assignment.
 fn set_face_brep_editing_enabled<O>(_face: O, _editing: bool) -> Result<()> {
-    // UNPORTED(topology.brep_p1): SmBrep::m_bEditingEnabled
-    Err(SolidError::unported(
-        "SmBrep::m_bEditingEnabled",
-        "topology.brep_p1",
-    ))
+    // UNPORTED(topology.face_p4): SmFace::GetBrep (SmBrep::m_bEditingEnabled is
+    // Brep::set_editing_enabled once the face's B-rep is reachable)
+    Err(SolidError::unported("SmFace::GetBrep", "topology.face_p4"))
 }
 
 /// `SmFace::CreateUVTrimCurves(TRUE, NULL, NULL, ..)`.
@@ -1131,7 +1132,8 @@ fn set_face_brep_editing_enabled<O>(_face: O, _editing: bool) -> Result<()> {
 /// When wiring, keep upstream's arguments exactly: `(TRUE, NULL, NULL, ..)`
 /// (`SmTrimSrfCache.cpp:209`).
 fn face_create_uv_trim_curves<O>(_face: O) -> Result<()> {
-    // UNPORTED(topology.face_p3): SmFace::CreateUVTrimCurves(TRUE, NULL, NULL, ..)
+    // UNPORTED(topology.face_p3): SmFace::CreateUVTrimCurves -- justified: findings.md topology.face_p3 "Stubs left for this unit"
+    // (`(TRUE, NULL, NULL, ..)`; the face is an opaque handle with no B-rep)
     Err(SolidError::unported(
         "SmFace::CreateUVTrimCurves",
         "topology.face_p3",

@@ -39,6 +39,7 @@
 
 use std::path::Path;
 
+use crate::validate::{bad, check_knots, NOW, NOZ};
 use crate::{call_with_buffer, FfiError};
 
 /// Largest control point index.
@@ -47,9 +48,6 @@ pub const MAX_INDEX: usize = 32;
 pub const MAX_DEGREE: usize = 5;
 /// Largest coordinate magnitude.
 pub const MAX_COORD: f64 = 1.0e300;
-
-const NOW: f64 = -f64::MAX;
-const NOZ: f64 = f64::MAX;
 
 /// Shim operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,27 +86,9 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
-
-/// Sequential reader over the input.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
+crate::reader::unit_reader!(MAX_COORD);
 
 impl Reader<'_> {
-    fn num(&mut self) -> Result<f64, FfiError> {
-        let v = self
-            .input
-            .get(self.at)
-            .copied()
-            .ok_or_else(|| bad("input too short"))?;
-        self.at += 1;
-        Ok(v)
-    }
-
     fn finite(&mut self) -> Result<f64, FfiError> {
         let v = self.num()?;
         if !v.is_finite() || v.abs() > MAX_COORD {
@@ -153,51 +133,6 @@ impl Reader<'_> {
     fn flag(&mut self) -> Result<bool, FfiError> {
         Ok(self.index(1)? == 1)
     }
-
-    fn done(&self) -> Result<(), FfiError> {
-        if self.at != self.input.len() {
-            return Err(bad("trailing input"));
-        }
-        Ok(())
-    }
-}
-
-/// Checks a clamped knot vector of degree `p`.
-fn check_knots(knots: &[f64], p: usize, what: &str) -> Result<(f64, f64), FfiError> {
-    let m = knots
-        .len()
-        .checked_sub(1)
-        .ok_or_else(|| bad(format!("{what}: no knots")))?;
-    if knots.windows(2).any(|w| w.first() > w.last()) {
-        return Err(bad(format!("{what}: knots not non-decreasing")));
-    }
-    let (Some(&a), Some(&b)) = (knots.first(), knots.last()) else {
-        return Err(bad(format!("{what}: empty knots")));
-    };
-    let short = || bad(format!("{what}: knots too short"));
-    if m < 2 * p + 1 {
-        return Err(short());
-    }
-    let head = knots.get(..=p).ok_or_else(short)?;
-    let tail = knots.get(m - p..).ok_or_else(short)?;
-    let inner = knots.get(p + 1..m - p).ok_or_else(short)?;
-    if a >= b || head.iter().any(|&k| k != a) || tail.iter().any(|&k| k != b) {
-        return Err(bad(format!("{what}: knots not clamped")));
-    }
-    if b - a < 1e-6 * a.abs().max(b.abs()).max(1.0) {
-        return Err(bad(format!("{what}: parameter range too small")));
-    }
-    if inner.iter().any(|&k| k == a || k == b) {
-        return Err(bad(format!("{what}: end multiplicity above degree + 1")));
-    }
-    let mut run = 1;
-    for w in inner.windows(2) {
-        run = if w.first() == w.last() { run + 1 } else { 1 };
-        if run > p {
-            return Err(bad(format!("{what}: interior multiplicity above the degree")));
-        }
-    }
-    Ok((a, b))
 }
 
 /// Checks `k` control points sharing their rational marker (`z = NOZ` allowed for
@@ -220,7 +155,10 @@ fn check_points(rd: &mut Reader<'_>, k: usize, planar: bool, what: &str) -> Resu
             return Err(bad(format!("{what}: weight out of range")));
         }
         let z = if z == NOZ { 0.0 } else { z };
-        if [x, y, z].iter().any(|c| !c.is_finite() || c.abs() > MAX_COORD) {
+        if [x, y, z]
+            .iter()
+            .any(|c| !c.is_finite() || c.abs() > MAX_COORD)
+        {
             return Err(bad(format!("{what}: point out of range")));
         }
     }
@@ -276,9 +214,36 @@ fn curve(rd: &mut Reader<'_>) -> Result<(f64, f64), FfiError> {
     check_knots(&knots, p, "curve")
 }
 
+/// [`surface`] for a wrapper with its own reader (`topology_brep_p2`): validates the
+/// surface block of `input` at `at`; returns its domain and the position after it.
+pub(crate) fn surface_at(input: &[f64], at: usize) -> Result<(Domain, usize), FfiError> {
+    let mut rd = Reader::new(input);
+    rd.at = at;
+    let d = surface(&mut rd)?;
+    Ok((d, rd.at))
+}
+
+/// [`curve`] for a wrapper with its own reader: validates the curve block of `input` at
+/// `at`; returns its parameter range and the position after it.
+pub(crate) fn curve_at(input: &[f64], at: usize) -> Result<((f64, f64), usize), FfiError> {
+    let mut rd = Reader::new(input);
+    rd.at = at;
+    let r = curve(&mut rd)?;
+    Ok((r, rd.at))
+}
+
+/// [`brep_block`] for a wrapper with its own reader: validates the B-rep block at the
+/// start of `input`; returns the position after it.
+pub(crate) fn brep_block_at(input: &[f64], path: &str) -> Result<usize, FfiError> {
+    let mut rd = Reader::new(input);
+    brep_block(&mut rd, path)?;
+    Ok(rd.at)
+}
+
 /// A B-rep block.
 fn brep_block(rd: &mut Reader<'_>, path: &str) -> Result<(), FfiError> {
-    match rd.index(3)? {
+    let kind = rd.index(4)?;
+    match kind {
         0 => {
             let p = Path::new(path);
             if p.extension().and_then(|e| e.to_str()) != Some("smb") || !p.is_file() {
@@ -294,10 +259,11 @@ fn brep_block(rd: &mut Reader<'_>, path: &str) -> Result<(), FfiError> {
                 return Err(bad("wire edge interval outside the curve's"));
             }
         }
-        2 => {
+        2 | 4 => {
             let dom = surface(rd)?;
             let d = rd.finites(4)?;
-            let (Some(&a), Some(&b2), Some(&c), Some(&e)) = (d.first(), d.get(1), d.get(2), d.get(3))
+            let (Some(&a), Some(&b2), Some(&c), Some(&e)) =
+                (d.first(), d.get(1), d.get(2), d.get(3))
             else {
                 return Err(bad("domain too short"));
             };
@@ -313,6 +279,15 @@ fn brep_block(rd: &mut Reader<'_>, path: &str) -> Result<(), FfiError> {
                 None => {
                     if d.iter().any(|x| x.abs() > 1e4) {
                         return Err(bad("plane face domain too large"));
+                    }
+                }
+            }
+            if kind == 4 {
+                // kind 4 adds an inner vertex loop at these fractions of the domain
+                for _ in 0..2 {
+                    let t = rd.finite()?;
+                    if !(0.0..=1.0).contains(&t) {
+                        return Err(bad("vertex loop fraction outside [0, 1]"));
                     }
                 }
             }
@@ -430,7 +405,7 @@ fn raw(op: Op, path: &str, input: &[f64]) -> Result<Vec<f64>, FfiError> {
 /// [`FfiError::InvalidArgument`] for a malformed input; [`FfiError::Status`] for a shim
 /// failure.
 pub fn eval(op: Op, path: &str, input: &[f64]) -> Result<Vec<f64>, FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     brep_block(&mut rd, path)?;
     let block = input.get(..rd.at).ok_or_else(|| bad("input too short"))?;
     let export = raw(Op::Export, path, block)?;

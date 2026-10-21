@@ -26,6 +26,7 @@
 // pointer-to-member access), never the functions under test. Ops whose upstream path
 // would dereference null output -2 instead of calling it.
 #include "sc_shim.h"
+#include "support/topology_fixture.h"
 
 
 #include "StdAfx.h"
@@ -357,12 +358,18 @@ std::vector<SmTopology*> list_of(SmTopology* head)
 }
 
 // Walks everything reachable from the B-rep's regions, registering in first-seen order.
-void walk(SmBrep* brep, Graph& g, bool include_vertex_lists = false)
+void walk(SmBrep* brep, Graph& g, bool include_vertex_lists = true)
 {
     SmTArray<SmRegion*> regs;
     brep->GetRegions(regs);
     for (ULONG i = 0; i < regs.GetSize(); i++)
         g.region(regs[i]);
+    // SmBrep::GetEdges order is observable (SmShell::GetWireEdges, shell wire ownership), and a
+    // wire owned by a face shell may be unreachable from faces/vertex lists: register it first.
+    SmTArray<SmEdge*> all_edges;
+    brep->GetEdges(all_edges);
+    for (ULONG i = 0; i < all_edges.GetSize(); ++i)
+        g.edge(all_edges[i]);
     size_t r = 0, s = 0, fu = 0, lu = 0, eu = 0, vu = 0, l = 0, e = 0, f = 0, v = 0;
     bool more = true;
     while (more)
@@ -661,6 +668,12 @@ void export_graph(SmBrep* brep, Graph& g, std::vector<double>& o)
         put_vec(o, p->GetPoint());
         o.push_back((double)p->GetTolerance());
     }
+    // Version 3 shell/region state (infinite region, void flags, wire/vertex shell heads, vertex-use
+    // lists, face-use links), read from the native records by the shared exporter.
+    sc_topology_fixture::append_shell_state(
+        {*brep, g.regions, g.shells, g.faceuses, g.faces, g.loopuses, g.loops, g.edgeuses, g.edges,
+         g.vertexuses, g.vertices},
+        o);
 }
 
 // Builds the B-rep of a B-rep block; nullptr (status in `st`) when construction fails.
@@ -682,12 +695,28 @@ SmBrep* build(Rd& rd, const char* path, SmStatus& status)
         SmEdge* pEdge = nullptr;
         status = brep->CreateWireEdgeFromCurve(c, SmExtent1d(t0, t1), pEdge);
     }
-    else if (kind == 2)
+    else if (kind == 2 || kind == 4)
     {
         SmSurface* s = read_surface(rd, ctx);
         SmPoint2d a = rd.uv(), b = rd.uv();
         SmFace* pFace = nullptr;
         status = brep->CreateFaceFromSurface(s, SmExtent2d(a, b), pFace);
+        if (kind == 4)
+        {
+            // kind 4: the face of kind 2 plus an inner vertex loop at the surface point
+            // whose parameters are the given fractions of the face domain
+            double fu = rd.num(), fv = rd.num();
+            if (status == SM_SUCCESS && pFace)
+            {
+                SmPoint2d uv(a.x + fu * (b.x - a.x), a.y + fv * (b.y - a.y));
+                SmPoint3d pt(0.0, 0.0, 0.0);
+                status = pFace->GetSurface()->EvaluatePoint(uv, pt);
+                SmLoop* pLoop = nullptr;
+                SmVertex* pVertex = nullptr;
+                if (status == SM_SUCCESS)
+                    status = brep->MakeVertexLoop(pFace, pt, pLoop, pVertex);
+            }
+        }
     }
     else
     {

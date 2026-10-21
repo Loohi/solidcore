@@ -17839,8 +17839,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0250",
@@ -20387,8 +20387,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0563",
@@ -20603,8 +20603,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0589",
@@ -22619,8 +22619,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0837",
@@ -23107,8 +23107,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0895",
@@ -25923,8 +25923,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen1242",
@@ -37914,7 +37914,7 @@
   "deferred_by_unit": {
     "curve.crv_on_surf": 24,
     "curve.iso_curve": 22,
-    "intersect.curve_class_p4": 6,
+    "intersect.curve_class_p2": 6,
     "topology.edge": 8,
     "topology.face_p2": 8
   },

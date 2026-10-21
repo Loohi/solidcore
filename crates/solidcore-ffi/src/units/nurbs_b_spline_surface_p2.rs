@@ -55,6 +55,7 @@
 //! degrees, weight count and point count pass upstream's checks; one to six arcs for
 //! `Sphere`.
 
+use crate::validate::{bad, NOW, NOZ};
 use crate::{call_with_buffer, FfiError};
 
 /// Largest control point index accepted by [`eval`].
@@ -63,11 +64,6 @@ pub const MAX_INDEX: usize = 512;
 pub const MAX_DEGREE: usize = 17;
 /// Largest `Expert` stride accepted by [`eval`].
 pub const MAX_STRIDE: usize = 256;
-/// `NL_NOZ`.
-const NOZ: f64 = f64::MAX;
-/// `NL_NOW`.
-const NOW: f64 = -f64::MAX;
-
 /// The upstream routine run by the shim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -153,27 +149,9 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
-
-/// Sequential reader over the input.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
+crate::reader::unit_reader!();
 
 impl Reader<'_> {
-    fn num(&mut self) -> Result<f64, FfiError> {
-        let v = self
-            .input
-            .get(self.at)
-            .copied()
-            .ok_or_else(|| bad("input too short"))?;
-        self.at += 1;
-        Ok(v)
-    }
-
     fn finite(&mut self) -> Result<f64, FfiError> {
         let v = self.num()?;
         if !v.is_finite() {
@@ -186,30 +164,11 @@ impl Reader<'_> {
         (0..k).map(|_| self.finite()).collect()
     }
 
-    fn index(&mut self, max: usize) -> Result<usize, FfiError> {
-        let v = self.num()?;
-        if v.fract() != 0.0 || v < 0.0 || v > max as f64 {
-            return Err(bad(format!("bad index/count {v}")));
-        }
-        Ok(v as usize)
-    }
-
-    fn flag(&mut self) -> Result<bool, FfiError> {
-        Ok(self.index(1)? == 1)
-    }
-
     fn domain(&mut self) -> Result<(), FfiError> {
         let d = self.finites(4)?;
         let at = |i: usize| d.get(i).copied().unwrap_or(f64::NAN);
         if !(at(0) <= at(2) && at(1) <= at(3)) {
             return Err(bad("domain not ordered"));
-        }
-        Ok(())
-    }
-
-    fn done(&self) -> Result<(), FfiError> {
-        if self.at != self.input.len() {
-            return Err(bad("trailing input"));
         }
         Ok(())
     }
@@ -451,7 +410,7 @@ fn validate_surface_op(
 }
 
 fn validate(op: Op, input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     let ctor = rd.index(2)?;
     if (ctor == 0) != op.is_static() {
         return Err(bad("static ops need ctor 0, surface ops a constructor"));

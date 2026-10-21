@@ -58,8 +58,8 @@
 //!   cbiDoSplit = FALSE` and is not ported.
 //! - The `SM_DEBUG_CODE` blocks (dumps, drawing) are not ported; release `SM_ASSERT`s
 //!   are expression statements whose only effect is the dereference they make.
-//! - **Callees not ported yet** return [`SolidError::Unported`]: `SmBrep::MakeEdgeInFace`
-//!   (`topology.brep_p5`), `SmFace::CalculateUVDomainFromUVTrimCurves`
+//! - **Callees not ported yet** return [`SolidError::Unported`]: the owning B-rep editing metadata for `SmBrep::MakeEdgeInFace`
+//!   (`topology.brep_p1`; part 5's typed arena entry point is available), `SmFace::CalculateUVDomainFromUVTrimCurves`
 //!   (`topology.face_p1`), `sm_ClassifyParamOnFaces` (`query.face_p2`),
 //!   `SmSurface::DropPoint` (`surface.surface_p5`) and `SmEdgeuse::EvaluateBinormal`
 //!   (`topology.edgeuse_p3`).
@@ -334,10 +334,12 @@ fn edge_point_solve<O: ClassObject>(
 
 /// `SmBrep::MakeEdgeInFace`: the new edge, loop and face.
 fn make_edge_in_face<O>() -> Result<(Option<O>, Option<O>, Option<O>)> {
-    // UNPORTED(topology.brep_p5): SmBrep::MakeEdgeInFace
+    // The handle-only ProtoBrep store has no owning B-rep editing metadata.
+    // Part 5's arena entry point requires the actual flag; do not assume TRUE.
+    // UNPORTED(topology.brep_p1): SmBrep::m_bEditingEnabled
     Err(SolidError::unported(
-        "SmBrep::MakeEdgeInFace",
-        "topology.brep_p5",
+        "SmBrep::m_bEditingEnabled",
+        "topology.brep_p1",
     ))
 }
 
@@ -386,7 +388,10 @@ fn surface_drop_point<O: Copy>(surface: Option<O>, point: Point3) -> Result<Opti
 /// `SmEdgeuse::EvaluateBinormal(dParam, FALSE, rPt, rBinormal)`: the binormal.
 fn edgeuse_evaluate_binormal<O: Copy>(edgeuse: O, param: f64) -> Result<Vec3> {
     let _ = (edgeuse, param);
-    // UNPORTED(topology.edgeuse_p3): SmEdgeuse::EvaluateBinormal
+    // UNPORTED(topology.edgeuse_p3): SmEdgeuse::EvaluateBinormal (justified: findings.md topology.edgeuse_p3)
+    // justified: findings.md, topology.edgeuse_p3 (proto topology stub): the proto topology
+    // sees the edge use only as an opaque handle (`ProtoBrep`, no `Brep`/`Kernel` to call
+    // `topology::edgeuse::p3::evaluate_binormal` on)
     Err(SolidError::unported(
         "SmEdgeuse::EvaluateBinormal",
         "topology.edgeuse_p3",
@@ -2051,6 +2056,7 @@ mod tests {
     use crate::intersect::point_class::{ClassGeometry, ClassObjectKind};
     use crate::surface::surface::Surface;
     use crate::surface::volume::Volume;
+    use crate::topology::Brep;
 
     /// Pool handles: an index and a kind.
     #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2182,7 +2188,9 @@ mod tests {
 
     fn manager() -> ProtoTopologyManager<H> {
         let b = H(100, ClassObjectKind::Other);
-        ProtoTopologyManager::new(b, b, b, 1e-5, 1e-3, -1.0).unwrap()
+        let e = Brep::new();
+        ProtoTopologyManager::new(&Kernel::default(), (b, &e), (b, &e), b, 1e-5, 1e-3, -1.0)
+            .unwrap()
     }
 
     fn region_pc(o: H) -> PointClassification<H> {

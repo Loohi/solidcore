@@ -36,6 +36,7 @@
 //! with `U[r] != U[r+1]` and its multiplicity `s`. Indices `k`, `l`, `i` may exceed
 //! their ranges by a little (upstream checks them first).
 
+use crate::validate::bad;
 use crate::{call_with_buffer, FfiError};
 
 /// Largest control point index accepted by [`eval`].
@@ -134,27 +135,9 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
+crate::reader::unit_reader!();
 
-/// Sequential reader over the input.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn num(&mut self) -> Result<f64, FfiError> {
-        let v = self
-            .input
-            .get(self.at)
-            .copied()
-            .ok_or_else(|| bad("input too short"))?;
-        self.at += 1;
-        Ok(v)
-    }
-
+impl Reader<'_> {
     fn finite(&mut self) -> Result<f64, FfiError> {
         let v = self.num()?;
         if !v.is_finite() {
@@ -170,39 +153,10 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    fn index(&mut self, max: usize) -> Result<usize, FfiError> {
-        let v = self.num()?;
-        if v.fract() != 0.0 || v < 0.0 || v > max as f64 {
-            return Err(bad(format!("bad index/count {v}")));
-        }
-        Ok(v as usize)
-    }
-
-    fn flag(&mut self) -> Result<bool, FfiError> {
-        Ok(self.index(1)? == 1)
-    }
-
     fn side(&mut self) -> Result<(), FfiError> {
         let v = self.num()?;
         if v != 1.0 && v != 2.0 {
             return Err(bad(format!("bad side flag {v}")));
-        }
-        Ok(())
-    }
-
-    fn take(&mut self, k: usize) -> Result<&'a [f64], FfiError> {
-        let end = self.at.checked_add(k).ok_or_else(|| bad("overflow"))?;
-        let s = self
-            .input
-            .get(self.at..end)
-            .ok_or_else(|| bad("input too short"))?;
-        self.at = end;
-        Ok(s)
-    }
-
-    fn done(&self) -> Result<(), FfiError> {
-        if self.at != self.input.len() {
-            return Err(bad("trailing input"));
         }
         Ok(())
     }
@@ -271,7 +225,7 @@ fn knot_array(rd: &mut Reader<'_>) -> Result<(), FfiError> {
 }
 
 fn validate(op: Op, input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     let c = if op.has_curve() {
         Some(curve(&mut rd)?)
     } else {

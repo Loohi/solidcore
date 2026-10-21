@@ -469,45 +469,45 @@ impl<O> ScaledZero for CurveInterval<O> {
 #[allow(clippy::struct_excessive_bools)] // upstream's SmBoolean members
 pub struct CurveClassification<O> {
     /// `m_bIsCurveOwned`.
-    is_curve_owned: bool,
+    pub(super) is_curve_owned: bool,
     /// `m_cpCurve`: the curve being classified.
-    curve: Option<O>,
+    pub(super) curve: Option<O>,
     /// `m_sSrcZoneTol3d`: the zone tolerance of the curve's source.
-    src_zone_tol_3d: f64,
+    pub(super) src_zone_tol_3d: f64,
     /// `m_cpUVCurve1`.
-    uv_curve1: Option<O>,
+    pub(super) uv_curve1: Option<O>,
     /// `m_bIsCurveCurrent`.
-    is_curve_current: bool,
+    pub(super) is_curve_current: bool,
     /// `m_cpSurface1`.
-    surface1: Option<O>,
+    pub(super) surface1: Option<O>,
     /// `m_cpSurface2`.
-    surface2: Option<O>,
+    pub(super) surface2: Option<O>,
     /// `m_bDoingCrossHatch`.
-    doing_cross_hatch: bool,
+    pub(super) doing_cross_hatch: bool,
     /// `m_bDoingFillets`.
-    doing_fillets: bool,
+    pub(super) doing_fillets: bool,
     /// `m_bOKToSetTolerance`.
-    ok_to_set_tolerance: bool,
+    pub(super) ok_to_set_tolerance: bool,
     /// `m_bTgtLoopsOnly`.
-    tgt_loops_only: bool,
+    pub(super) tgt_loops_only: bool,
     /// `m_sTgtLoops`.
-    tgt_loops: Vec<O>,
+    pub(super) tgt_loops: Vec<O>,
     /// `m_cpOtherClassification`.
-    other_classification: Option<O>,
+    pub(super) other_classification: Option<O>,
     /// `m_cpFace`.
-    face: Option<O>,
+    pub(super) face: Option<O>,
     /// `m_cpUVCurve2`.
-    uv_curve2: Option<O>,
+    pub(super) uv_curve2: Option<O>,
     /// `m_cpTI`.
-    ti: Option<O>,
+    pub(super) ti: Option<O>,
     /// `m_vInterval`: the whole interval classified.
-    interval: Extent1d,
+    pub(super) interval: Extent1d,
     /// `m_pData[0 .. m_lSize]`.
-    data: Vec<CurveInterval<O>>,
+    pub(super) data: Vec<CurveInterval<O>>,
     /// `m_pData != NULL`: whether upstream's interval array is allocated.
-    allocated: bool,
+    pub(super) allocated: bool,
     /// `m_bIgnoreTangency`.
-    ignore_tangency: bool,
+    pub(super) ignore_tangency: bool,
 }
 
 impl<O: ClassObject> CurveClassification<O> {
@@ -553,6 +553,54 @@ impl<O: ClassObject> CurveClassification<O> {
             .push(CurveInterval::with_interval(k, &interval, Some(&result)));
         result.allocated = true;
         result
+    }
+
+    /// The same classification with every object handle (the curves, surfaces, face,
+    /// target loops, other classification and the intervals' point classifications'
+    /// objects) replaced by `f` of it: a change of handle type, no new state.
+    ///
+    /// # Errors
+    ///
+    /// Those of `f`.
+    pub fn map_objects<P: ClassObject>(
+        &self,
+        f: &mut dyn FnMut(O) -> Result<P>,
+    ) -> Result<CurveClassification<P>> {
+        let mut data = Vec::with_capacity(self.data.len());
+        for d in &self.data {
+            data.push(CurveInterval {
+                interval: d.interval,
+                start: d.start.map_objects(&mut *f)?,
+                mid: d.mid.map_objects(&mut *f)?,
+                end: d.end.map_objects(&mut *f)?,
+            });
+        }
+        let mut tgt_loops = Vec::with_capacity(self.tgt_loops.len());
+        for l in &self.tgt_loops {
+            tgt_loops.push(f(*l)?);
+        }
+        Ok(CurveClassification {
+            is_curve_owned: self.is_curve_owned,
+            curve: self.curve.map(&mut *f).transpose()?,
+            src_zone_tol_3d: self.src_zone_tol_3d,
+            uv_curve1: self.uv_curve1.map(&mut *f).transpose()?,
+            is_curve_current: self.is_curve_current,
+            surface1: self.surface1.map(&mut *f).transpose()?,
+            surface2: self.surface2.map(&mut *f).transpose()?,
+            doing_cross_hatch: self.doing_cross_hatch,
+            doing_fillets: self.doing_fillets,
+            ok_to_set_tolerance: self.ok_to_set_tolerance,
+            tgt_loops_only: self.tgt_loops_only,
+            tgt_loops,
+            other_classification: self.other_classification.map(&mut *f).transpose()?,
+            face: self.face.map(&mut *f).transpose()?,
+            uv_curve2: self.uv_curve2.map(&mut *f).transpose()?,
+            ti: self.ti.map(&mut *f).transpose()?,
+            interval: self.interval,
+            data,
+            allocated: self.allocated,
+            ignore_tangency: self.ignore_tangency,
+        })
     }
 
     /// Sets the native cross-hatch tolerance mode (`SetDoingCrossHatch`).
@@ -1167,9 +1215,10 @@ fn out_of_bounds(surface: &Surface) -> Cow<'_, Surface> {
             *s.base_mut().out_of_bounds_enabled_mut() = true;
             Cow::Owned(Surface::from(s))
         }
-        SurfaceKind::CurveBounded(_) | SurfaceKind::Step(_) | SurfaceKind::SrfInVolume(_) => {
-            Cow::Borrowed(surface)
-        }
+        SurfaceKind::CurveBounded(_)
+        | SurfaceKind::Step(_)
+        | SurfaceKind::OffsetSurface(_)
+        | SurfaceKind::SrfInVolume(_) => Cow::Borrowed(surface),
     }
 }
 
@@ -2300,7 +2349,7 @@ pub fn cull_or_refine_cci_in_3d<S: SolutionObject>(
 /// surface point solve (`SER`) and of the topology accessors for a dangling id.
 pub fn compute_face_point_class(
     k: &Kernel,
-    b: &Brep,
+    b: &mut Brep,
     point: Point3,
     src_zone_tol_3d: f64,
     f: FaceId,
@@ -2708,27 +2757,34 @@ mod tests {
     #[test]
     fn face_point_class_near_and_far_from_a_plane_face() {
         let k = Kernel::default();
-        let (b, _, f) = stand_in_brep(None);
+        let (mut b, _, f) = stand_in_brep(None);
         let mut pc = PointClassification::new(1e-5);
-        let ok = compute_face_point_class(&k, &b, Point3::new(0.25, 0.5, 1e-7), 1e-5, f, &mut pc)
-            .unwrap();
+        let ok =
+            compute_face_point_class(&k, &mut b, Point3::new(0.25, 0.5, 1e-7), 1e-5, f, &mut pc)
+                .unwrap();
         assert!(ok);
         // a face without loops has nothing inside
         assert_eq!(pc.point_class(), PointClassType::Unknown);
         // nothing near
         let mut pc = PointClassification::new(1e-5);
-        let far = compute_face_point_class(&k, &b, Point3::new(0.25, 0.5, 3.0), 1e-5, f, &mut pc)
-            .unwrap();
+        let far =
+            compute_face_point_class(&k, &mut b, Point3::new(0.25, 0.5, 3.0), 1e-5, f, &mut pc)
+                .unwrap();
         assert!(!far);
 
         // a face without surface
         let mut b2 = b.clone();
         b2.face_mut(f).unwrap().surface = None;
         let mut pc = PointClassification::new(1e-5);
-        assert!(
-            compute_face_point_class(&k, &b2, Point3::new(0.0, 0.0, 0.0), 1e-5, f, &mut pc)
-                .is_err()
-        );
+        assert!(compute_face_point_class(
+            &k,
+            &mut b2,
+            Point3::new(0.0, 0.0, 0.0),
+            1e-5,
+            f,
+            &mut pc
+        )
+        .is_err());
     }
 
     #[test]

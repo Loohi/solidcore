@@ -23,7 +23,7 @@
 //! Outputs: `failed` (`0` success, `1` a failing status, `-2` where upstream would
 //! dereference null; the shim does not call it, the port returns `InvalidInput`), then
 //! on success the op's values. The radial classifications are deferred
-//! (`SmEdgeuse::EvaluateBinormalStepOff`, unit `topology.edgeuse_p2`).
+//! (`SmEdgeuse::EvaluateBinormal`, unit `topology.edgeuse_p3`, under `EvaluateBinormalStepOff`).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -38,6 +38,7 @@ use solidcore::geom::vector3d::Vec3;
 use solidcore::kernel::Kernel;
 use solidcore::nurbs::b_spline_curve::{BSplineCurve, BoundingBoxRequest, BoundingBoxes};
 use solidcore::nurbs::b_spline_surface_n_lib::p2::OrientType;
+use solidcore::nurbs::math::NOW;
 use solidcore::nurbs::nurbs_crv::allocate_nurb_curve;
 use solidcore::query::edge as qe;
 use solidcore::topology::edgeuse::p1 as eu1;
@@ -58,8 +59,6 @@ pub struct Runner;
 fn harness(msg: impl Into<String>) -> HarnessError {
     HarnessError::new(msg)
 }
-
-const NOW: f64 = -f64::MAX;
 
 /// "Upstream would dereference null" (output of the shim, `InvalidInput` in Rust).
 const NULL_DEREF: i64 = -2;
@@ -153,8 +152,15 @@ enum BrepIn {
         #[serde(default)]
         rebuild: bool,
     },
-    Face { surface: BssIn, dom: [f64; 4] },
-    Wire { curve: CurveIn, t0: f64, t1: f64 },
+    Face {
+        surface: BssIn,
+        dom: [f64; 4],
+    },
+    Wire {
+        curve: CurveIn,
+        t0: f64,
+        t1: f64,
+    },
 }
 
 /// One edge's edits (`edge` a selector).
@@ -252,7 +258,13 @@ fn curve_block(v: &mut Vec<f64>, c: &CurveIn) {
             for p in [e.c, e.x, e.y] {
                 v.extend_from_slice(&p);
             }
-            v.extend([e.domain[0], e.domain[1], e.radii[0], e.radii[1], b(e.inside_out)]);
+            v.extend([
+                e.domain[0],
+                e.domain[1],
+                e.radii[0],
+                e.radii[1],
+                b(e.inside_out),
+            ]);
         }
         CurveIn::Circle(e) => {
             v.extend([4.0, 3.0]);
@@ -265,7 +277,11 @@ fn curve_block(v: &mut Vec<f64>, c: &CurveIn) {
 }
 
 fn push_surface(v: &mut Vec<f64>, s: &BssIn) -> Result<(), HarnessError> {
-    let n = s.net.len().checked_sub(1).ok_or_else(|| harness("empty net"))?;
+    let n = s
+        .net
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| harness("empty net"))?;
     let m = s
         .net
         .first()
@@ -274,8 +290,14 @@ fn push_surface(v: &mut Vec<f64>, s: &BssIn) -> Result<(), HarnessError> {
     if s.net.iter().any(|r| r.len() != m + 1) {
         return Err(harness("ragged net"));
     }
-    let r = s.u.len().checked_sub(1).ok_or_else(|| harness("no u knots"))?;
-    let q = s.v.len().checked_sub(1).ok_or_else(|| harness("no v knots"))?;
+    let r =
+        s.u.len()
+            .checked_sub(1)
+            .ok_or_else(|| harness("no u knots"))?;
+    let q =
+        s.v.len()
+            .checked_sub(1)
+            .ok_or_else(|| harness("no v knots"))?;
     v.extend([
         0.0,
         b(s.oob),
@@ -364,7 +386,10 @@ fn build_curve(k: &Kernel, c: &CurveIn) -> Result<Curve, HarnessError> {
                 .len()
                 .checked_sub(1)
                 .ok_or_else(|| harness("no points"))?;
-            let m = bs.u.len().checked_sub(1).ok_or_else(|| harness("no knots"))?;
+            let m =
+                bs.u.len()
+                    .checked_sub(1)
+                    .ok_or_else(|| harness("no knots"))?;
             let mut cur =
                 allocate_nurb_curve(n, bs.p, m).map_err(|e| harness(format!("curve: {e}")))?;
             for (d, s) in cur.cpts_mut().iter_mut().zip(&bs.cpts) {
@@ -456,7 +481,8 @@ fn scene(k: &Kernel, i: &Inputs) -> Result<Result<Scene, Output>, HarnessError> 
     let block = brep_block(&i.brep)?;
     let mut plain = block.clone();
     plain.extend(edit_block(None, 0));
-    let first = ffi::eval(Op::Export, &path, &plain).map_err(|e| harness(format!("c++ export: {e}")))?;
+    let first =
+        ffi::eval(Op::Export, &path, &plain).map_err(|e| harness(format!("c++ export: {e}")))?;
     let Some(c) = ffi::counts(&first) else {
         let st = first.get(1).copied().unwrap_or(0.0);
         return Ok(Err(Output::err(format!("brep_build_status_{st}"))));
@@ -464,7 +490,8 @@ fn scene(k: &Kernel, i: &Inputs) -> Result<Result<Scene, Output>, HarnessError> 
     let n_edges = c[7];
     let mut prefix = block;
     prefix.extend(edit_block(i.edits.as_ref(), n_edges));
-    let ex = ffi::eval(Op::Export, &path, &prefix).map_err(|e| harness(format!("c++ export: {e}")))?;
+    let ex =
+        ffi::eval(Op::Export, &path, &prefix).map_err(|e| harness(format!("c++ export: {e}")))?;
     // the edge curve kinds follow the graph
     let split = ex
         .len()
@@ -484,7 +511,9 @@ fn scene(k: &Kernel, i: &Inputs) -> Result<Result<Scene, Output>, HarnessError> 
             }
             _ => {
                 if kind != -1 && kind != BSPLINE_CURVE_TYPE && kind != LINE_TYPE {
-                    return Err(harness(format!("edge curve of type {kind} cannot be imported")));
+                    return Err(harness(format!(
+                        "edge curve of type {kind} cannot be imported"
+                    )));
                 }
             }
         }
@@ -644,7 +673,12 @@ fn op_args(r: &Resolved) -> (Op, Vec<f64>) {
         } => {
             let mut v = vec![*eu as f64, *t];
             curve_block(&mut v, &CurveIn::Line(line.clone()));
-            v.extend([line.domain[0], line.domain[1], f64::from(*orient), b(*force)]);
+            v.extend([
+                line.domain[0],
+                line.domain[1],
+                f64::from(*orient),
+                b(*force),
+            ]);
             (Op::RadialCurve, v)
         }
     }
@@ -675,7 +709,10 @@ fn cpp(i: &Inputs) -> Result<Output, HarnessError> {
     input.extend(args);
     let out = ffi::eval(op, &s.path, &input).map_err(|e| harness(format!("c++: {e}")))?;
     let body = out.get(1..).ok_or_else(|| harness("c++: empty output"))?;
-    let st = body.first().copied().ok_or_else(|| harness("c++: no status"))?;
+    let st = body
+        .first()
+        .copied()
+        .ok_or_else(|| harness("c++: no status"))?;
     let failed = failed_of(st);
     let o = Output::new().int("failed", failed);
     if failed != 0 {
@@ -777,14 +814,14 @@ fn orient_of(code: u8) -> OrientType {
 
 fn rust(i: &Inputs) -> Result<Output, HarnessError> {
     let k = Kernel::default();
-    let s = match scene(&k, i)? {
+    let mut s = match scene(&k, i)? {
         Ok(s) => s,
         Err(o) => return Ok(o),
     };
     let Some(r) = resolve(&s, &i.op) else {
         return Ok(no_entity());
     };
-    let br = &s.brep;
+    let br = &mut s.brep;
     let eid = |i: usize| EdgeId::from_index(i as u32);
     let euid = |i: usize| EdgeuseId::from_index(i as u32);
     let ok = Output::new().int("failed", 0);
@@ -950,7 +987,11 @@ fn gen_wire(rng: &mut Rng) -> BrepIn {
                 p: o,
                 v: unit_dir(rng).map(|c| c * scale),
                 domain: [rng.uniform(-2.0, 0.0), rng.uniform(0.5, 3.0)],
-                scale: if rng.chance(0.3) { rng.uniform(0.5, 3.0) } else { 1.0 },
+                scale: if rng.chance(0.3) {
+                    rng.uniform(0.5, 3.0)
+                } else {
+                    1.0
+                },
                 inside_out: rng.chance(0.2),
             }),
             -10.0,
@@ -1106,7 +1147,11 @@ fn gen_case(rng: &mut Rng) -> Inputs {
         _ => gen_wire(rng),
     };
     let has_loops = !matches!(brep, BrepIn::Wire { .. });
-    let pick = if has_loops { rng.below(10) } else { rng.below(7) };
+    let pick = if has_loops {
+        rng.below(10)
+    } else {
+        rng.below(7)
+    };
     let op = match pick {
         0 | 1 => OpIn::Bbox {
             edge: gen_sel(rng),

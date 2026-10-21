@@ -29,6 +29,7 @@
 //! - Cross sections and rails have degree at most `MAX_SKIN_DEGREE` (upstream may
 //!   elevate them by one).
 
+use crate::validate::bad;
 use crate::{call_with_buffer, FfiError};
 
 /// Largest highest net index (`n`, `m`) of a surface accepted by [`skin`].
@@ -56,17 +57,9 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
+crate::reader::unit_reader!();
 
-/// Sequential reader over the input.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
-
-impl<'a> Reader<'a> {
+impl Reader<'_> {
     fn num(&mut self) -> Result<f64, FfiError> {
         let v = self
             .input
@@ -86,26 +79,6 @@ impl<'a> Reader<'a> {
             return Err(bad(format!("bad index/count/flag {v}")));
         }
         Ok(v as usize)
-    }
-
-    fn slice(&mut self, k: usize) -> Result<&'a [f64], FfiError> {
-        let end = self.at.checked_add(k).ok_or_else(|| bad("overflow"))?;
-        let s = self
-            .input
-            .get(self.at..end)
-            .ok_or_else(|| bad("input too short"))?;
-        if s.iter().any(|x| !x.is_finite()) {
-            return Err(bad("non-finite input"));
-        }
-        self.at = end;
-        Ok(s)
-    }
-
-    fn done(&self) -> Result<(), FfiError> {
-        if self.at != self.input.len() {
-            return Err(bad("trailing input"));
-        }
-        Ok(())
     }
 }
 
@@ -190,7 +163,7 @@ fn cross_shape<'a>(s: &SrfShape<'a>, bnd: usize) -> CrvShape<'a> {
 }
 
 fn validate(input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     let k = rd.index(1, MAX_CURVES - 1)?;
     let mut shapes: Vec<CrvShape<'_>> = Vec::with_capacity(k + 1);
     for _ in 0..=k {

@@ -52,6 +52,7 @@
 //! (`SmEdge::GetVertex`) over the bare stand-in edges of `InsertPointClass`,
 //! `MergePointClass`, `CleanupAndValidate` and `sm_ChangeEdgePointClassToNearVertex`.
 
+use crate::validate::{bad, euclid, NOW, NOZ};
 use crate::{call_with_buffer, FfiError};
 
 /// Largest pool size.
@@ -71,9 +72,6 @@ pub const MAX_INDEX: usize = 64;
 pub const MAX_SURF_INDEX: usize = 16;
 /// Largest degree.
 pub const MAX_DEGREE: usize = 9;
-
-const NOZ: f64 = f64::MAX;
-const NOW: f64 = -f64::MAX;
 
 /// Object kind codes.
 #[allow(missing_docs)]
@@ -147,27 +145,9 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
+crate::reader::unit_reader!(MAX_COORD);
 
-/// Sequential reader over the input.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn num(&mut self) -> Result<f64, FfiError> {
-        let v = self
-            .input
-            .get(self.at)
-            .copied()
-            .ok_or_else(|| bad("input too short"))?;
-        self.at += 1;
-        Ok(v)
-    }
-
+impl Reader<'_> {
     /// A finite value of magnitude at most `max`.
     fn bounded(&mut self, max: f64) -> Result<f64, FfiError> {
         let v = self.num()?;
@@ -197,15 +177,6 @@ impl<'a> Reader<'a> {
         Ok(v)
     }
 
-    /// An integer in `0..=max`.
-    fn index(&mut self, max: usize) -> Result<usize, FfiError> {
-        let v = self.num()?;
-        if v.fract() != 0.0 || v < 0.0 || v > max as f64 {
-            return Err(bad(format!("bad index/count {v}")));
-        }
-        Ok(v as usize)
-    }
-
     /// `-1` (`None`) or an object index below `len`.
     fn object(&mut self, len: usize) -> Result<Option<usize>, FfiError> {
         let v = self.num()?;
@@ -216,29 +187,6 @@ impl<'a> Reader<'a> {
             return Err(bad(format!("bad object index {v}")));
         }
         Ok(Some(v as usize))
-    }
-
-    fn flag(&mut self) -> Result<bool, FfiError> {
-        Ok(self.index(1)? == 1)
-    }
-
-    fn take(&mut self, k: usize) -> Result<&'a [f64], FfiError> {
-        let end = self.at.checked_add(k).ok_or_else(|| bad("overflow"))?;
-        let s = self
-            .input
-            .get(self.at..end)
-            .ok_or_else(|| bad("input too short"))?;
-        self.at = end;
-        Ok(s)
-    }
-}
-
-fn euclid([x, y, z, w]: [f64; 4]) -> [f64; 3] {
-    let z = if z == NOZ { 0.0 } else { z };
-    if w == NOW {
-        [x, y, z]
-    } else {
-        [x / w, y / w, z / w]
     }
 }
 
@@ -428,7 +376,7 @@ fn point_class(rd: &mut Reader<'_>, n_obj: usize) -> Result<(), FfiError> {
 ///
 /// [`FfiError::InvalidArgument`] for a malformed script.
 pub fn validate(input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     let n_obj = rd.index(MAX_OBJECTS)?;
     for i in 0..n_obj {
         let k = rd.index(kind::OTHER)?;

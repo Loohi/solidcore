@@ -33,6 +33,7 @@
 //!   equal degrees and control point counts, so upstream never reads past the
 //!   vector field's control points.
 
+use crate::validate::bad;
 use crate::{call_with_buffer, FfiError};
 
 /// Largest highest net index (`n`, `m`) of a surface accepted by [`eval`].
@@ -92,17 +93,9 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
+crate::reader::unit_reader!();
 
-/// Sequential reader over the input.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
-
-impl<'a> Reader<'a> {
+impl Reader<'_> {
     fn num(&mut self) -> Result<f64, FfiError> {
         let v = self
             .input
@@ -122,26 +115,6 @@ impl<'a> Reader<'a> {
             return Err(bad(format!("bad index/count/flag {v}")));
         }
         Ok(v as usize)
-    }
-
-    fn slice(&mut self, k: usize) -> Result<&'a [f64], FfiError> {
-        let end = self.at.checked_add(k).ok_or_else(|| bad("overflow"))?;
-        let s = self
-            .input
-            .get(self.at..end)
-            .ok_or_else(|| bad("input too short"))?;
-        if s.iter().any(|x| !x.is_finite()) {
-            return Err(bad("non-finite input"));
-        }
-        self.at = end;
-        Ok(s)
-    }
-
-    fn done(&self) -> Result<(), FfiError> {
-        if self.at != self.input.len() {
-            return Err(bad("trailing input"));
-        }
-        Ok(())
     }
 }
 
@@ -233,7 +206,7 @@ fn check_reach(t: f64, k: &[f64]) -> Result<(), FfiError> {
 }
 
 fn validate(op: Op, input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     match op {
         Op::ExtendByDist => {
             surface(&mut rd)?;

@@ -28,7 +28,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use solidcore::curve::curve::p2::{BSPLINE_CURVE_TYPE, LINE_TYPE};
+use solidcore::curve::crv_on_surf::CrvOnSurf;
+use solidcore::curve::curve::p2::{BSPLINE_CURVE_TYPE, CRV_ON_SURF_TYPE, LINE_TYPE};
 use solidcore::curve::curve::Curve as SmCurve;
 use solidcore::curve::line::Line;
 use solidcore::geom::extent1d::Extent1d;
@@ -47,8 +48,9 @@ use solidcore::nurbs::math::{CPoint, NOW, NOZ};
 use solidcore::nurbs::srf_basic::Surface as NlSurface;
 use solidcore::surface::plane::Plane;
 use solidcore::surface::surface::p2::DropCurveFail;
-use solidcore::surface::surface::Surface;
+use solidcore::surface::surface::{Surface, SurfaceKind};
 use solidcore::topology::edgeuse::p1 as eu1;
+use solidcore::topology::shell::{ShellMembers, ShellType};
 use solidcore::topology::{
     Brep, Edge, EdgeId, Edgeuse, EdgeuseId, EdgeuseOwner, Face, FaceId, Faceuse, FaceuseId,
     Loop, LoopId, Loopuse, LoopuseId, LoopuseStart, ObjectHandle, Region, RegionId, Shell,
@@ -95,14 +97,14 @@ pub(crate) struct CrvIn {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct BssIn {
     #[serde(default)]
-    oob: bool,
+    pub(crate) oob: bool,
     #[serde(default)]
-    form: u8,
-    net: Vec<Vec<[f64; 4]>>,
-    p: usize,
-    q: usize,
-    u: Vec<f64>,
-    v: Vec<f64>,
+    pub(crate) form: u8,
+    pub(crate) net: Vec<Vec<[f64; 4]>>,
+    pub(crate) p: usize,
+    pub(crate) q: usize,
+    pub(crate) u: Vec<f64>,
+    pub(crate) v: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,7 +125,25 @@ pub(crate) enum BrepIn {
     },
     Wire { curve: CrvIn, t0: f64, t1: f64 },
     Face { surface: SrfIn, dom: [f64; 4] },
+    /// A face as [`BrepIn::Face`] whose edges are `SmCrvOnSurf`s of the face's (B-spline)
+    /// surface over their UV trim curves: the `CrvOnSurf` path of `CreateUVTrimCurve`.
+    CrvOnSurfFace { surface: SrfIn, dom: [f64; 4] },
     Network,
+    Vertices { points: Vec<[f64; 3]> },
+    /// An optional face and `networks` copies of the wire network in one B-rep, so
+    /// face-use shells and wire shells coexist (native constructors only).
+    Mixed {
+        #[serde(default)]
+        face: Option<FaceIn>,
+        networks: usize,
+    },
+}
+
+/// The face of a [`BrepIn::Mixed`] B-rep (as [`BrepIn::Face`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct FaceIn {
+    surface: SrfIn,
+    dom: [f64; 4],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +215,9 @@ pub(crate) fn push_surface(v: &mut Vec<f64>, s: &SrfIn) -> Result<(), HarnessErr
             if b.net.iter().any(|r| r.len() != m + 1) {
                 return Err(harness("ragged net"));
             }
+            if b.u.is_empty() || b.v.is_empty() {
+                return Err(harness("empty knot vector"));
+            }
             v.extend([
                 0.0,
                 f64::from(u8::from(b.oob)),
@@ -203,8 +226,12 @@ pub(crate) fn push_surface(v: &mut Vec<f64>, s: &SrfIn) -> Result<(), HarnessErr
                 m as f64,
                 b.p as f64,
                 b.q as f64,
-                (b.u.len() - 1) as f64,
-                (b.v.len() - 1) as f64,
+                b.u.len()
+                    .checked_sub(1)
+                    .ok_or_else(|| harness("empty u knots"))? as f64,
+                b.v.len()
+                    .checked_sub(1)
+                    .ok_or_else(|| harness("empty v knots"))? as f64,
             ]);
             for row in &b.net {
                 for p in row {
@@ -261,7 +288,24 @@ pub(crate) fn brep_block_of(
             push_surface(&mut v, surface)?;
             v.extend(dom);
         }
+        BrepIn::CrvOnSurfFace { surface, dom } => {
+            v.push(6.0);
+            push_surface(&mut v, surface)?;
+            v.extend(dom);
+        }
         BrepIn::Network => v.push(3.0),
+        BrepIn::Vertices { points } => {
+            v.extend([4.0, points.len() as f64]);
+            for point in points { v.extend(point); }
+        }
+        BrepIn::Mixed { face, networks } => {
+            v.extend([5.0, flag(face.is_some())]);
+            if let Some(face) = face {
+                push_surface(&mut v, &face.surface)?;
+                v.extend(face.dom);
+            }
+            v.push(*networks as f64);
+        }
     }
     v.push(flag(validate_only));
     v.push(flag(init_gaps));
@@ -478,6 +522,16 @@ fn is_brep_op(op: &OpIn) -> bool {
     !matches!(op, OpIn::StepOff { .. } | OpIn::DistDev { .. } | OpIn::Seam { .. })
 }
 
+/// Reuse the native B-rep fixture encoding without duplicating its geometry
+/// constructors or input validation. Shell cases supply a B-rep description.
+pub(crate) fn fixture_input(value: Value) -> Result<(String, Vec<f64>), HarnessError> {
+    let brep: BrepIn = serde_json::from_value(value)
+        .map_err(|e| harness(format!("topology fixture: {e}")))?;
+    let inputs = Inputs { brep: Some(brep), validate_only: false, init_gaps: false,
+        op: OpIn::SetOrient { eu: 0, orient: 0 } };
+    Ok((path_of(inputs.brep.as_ref())?, brep_block(&inputs)?))
+}
+
 /// The C++ export of the case's B-rep.
 fn export(i: &Inputs) -> Result<Vec<f64>, HarnessError> {
     let path = path_of(i.brep.as_ref())?;
@@ -632,6 +686,20 @@ fn read_curve(rd: &mut Rd<'_>, uv: bool) -> Result<Option<SmCurve>, HarnessError
         return Err(harness("export: a curve is not an SmBSplineCurve"));
     }
     let ty = ty as i64;
+    if ty == CRV_ON_SURF_TYPE {
+        // an SmCrvOnSurf: the UV curve block, then the (B-spline) base surface block
+        let uv_curve = read_curve(rd, true)?
+            .ok_or_else(|| harness("export: CrvOnSurf without UV curve"))?;
+        let surface = read_surface(rd)?
+            .ok_or_else(|| harness("export: CrvOnSurf without surface"))?;
+        let SurfaceKind::BSpline(base) = surface.kind() else {
+            return Err(harness("export: CrvOnSurf base is not a B-spline surface"));
+        };
+        let k = Kernel::default();
+        let cos = CrvOnSurf::new(&k, uv_curve, base.clone(), None, 1)
+            .map_err(|e| harness(format!("export CrvOnSurf: {e}")))?;
+        return Ok(Some(SmCurve::from(cos)));
+    }
     let dim = rd.num()? as u64;
     let has_nurb = rd.num()? != 0.0;
     let base = if has_nurb {
@@ -741,18 +809,21 @@ pub(crate) fn import_with_types(ex: &[f64]) -> Result<(Brep, ImportTypes), Harne
     let mut regions = Vec::new();
     for _ in 0..n_r {
         let in_brep = rd.num()? != 0.0;
-        rd.list()?;
-        regions.push(Region { in_brep });
+        let shells = rd.list()?.into_iter()
+            .map(|x| opt(x, ShellId::from_index)?.ok_or_else(|| harness("null shell")))
+            .collect::<Result<Vec<_>, _>>()?;
+        regions.push(Region { in_brep, shells, ..Region::default() });
     }
     let mut shells = Vec::new();
     for _ in 0..n_s {
         let region = opt(rd.idx()?, RegionId::from_index)?;
-        rd.idx()?;
-        rd.list()?;
-        shells.push(Shell {
-            faces: Vec::new(),
-            region,
-        });
+        let shell_type = ShellType::from_code(rd.idx()?);
+        let faceuses = rd.list()?.into_iter()
+            .map(|x| opt(x, FaceuseId::from_index)?.ok_or_else(|| harness("null face use")))
+            .collect::<Result<Vec<_>, _>>()?;
+        let members = if faceuses.is_empty() { ShellMembers::Empty }
+            else { ShellMembers::Faceuses(faceuses) };
+        shells.push(Shell { faces: Vec::new(), region, shell_type, members });
     }
     let mut faceuses = Vec::new();
     for _ in 0..n_fu {
@@ -771,6 +842,7 @@ pub(crate) fn import_with_types(ex: &[f64]) -> Result<(Brep, ImportTypes), Harne
             mate,
             orientation,
             loopuses,
+            sibling_links: None,
         });
     }
     let mut surfaces = Vec::new();
@@ -903,11 +975,36 @@ pub(crate) fn import_with_types(ex: &[f64]) -> Result<(Brep, ImportTypes), Harne
     for _ in 0..n_v {
         let point = Vec3::new(rd.num()?, rd.num()?, rd.num()?);
         let tolerance = rd.num()?;
-        vertices.push(Vertex {
-            point,
-            tolerance,
-            ..Vertex::default()
-        });
+        vertices.push(Vertex { point, tolerance, ..Vertex::default() });
+    }
+    if rd.idx()? != 3 {
+        return Err(harness("export: unsupported shell extension version"));
+    }
+    let infinite_region = opt(rd.idx()?, RegionId::from_index)?;
+    for region in &mut regions {
+        region.is_void = i32::try_from(rd.idx()?)
+            .map_err(|_| harness("export: void flag outside native int range"))?;
+    }
+    for shell in &mut shells {
+        let head = rd.idx()?;
+        if shell.is_wire_shell() {
+            shell.members = opt(head, EdgeuseId::from_index)?
+                .map_or(ShellMembers::Empty, ShellMembers::Edgeuse);
+        } else if shell.is_vertex_shell() {
+            shell.members = opt(head, VertexuseId::from_index)?
+                .map_or(ShellMembers::Empty, ShellMembers::Vertexuse);
+        } else if head != -1 {
+            return Err(harness("export: unexpected shell head"));
+        }
+    }
+    for vertex in &mut vertices {
+        vertex.vertexuses = rd.list()?.into_iter()
+            .map(|v| opt(v, VertexuseId::from_index)?.ok_or_else(|| harness("null vertex use")))
+            .collect::<Result<Vec<_>, _>>()?;
+    }
+    for faceuse in &mut faceuses {
+        faceuse.sibling_links = Some((opt(rd.idx()?, FaceuseId::from_index)?,
+            opt(rd.idx()?, FaceuseId::from_index)?));
     }
     let brep_tolerance = rd.num()?;
     if rd.at != ex.len() {
@@ -917,6 +1014,7 @@ pub(crate) fn import_with_types(ex: &[f64]) -> Result<(Brep, ImportTypes), Harne
     // assemble (skeleton fields filled minimally)
     let mut b = Brep::new();
     b.set_validate_only(validate_only);
+    b.set_infinite_region_record(infinite_region);
     b.set_tolerance(brep_tolerance);
     for r in regions {
         b.add_region_record(r).map_err(|e| harness(e.to_string()))?;
@@ -1101,17 +1199,23 @@ fn inexact_geometry(b: &Brep, types: &ImportTypes, op: &OpIn) -> Option<Output> 
     let st = if surface { surface_of(e) } else { -1 };
     if st >= 0 && !EXACT_SURFACES.contains(&st) {
         let (unit, symbol) = match st {
-            15012 | 15013 => ("surface.cone_p1", "SmCone (no SurfaceKind)"),
-            15014 => ("surface.sphere", "SmSphere"),
-            15015 => ("surface.torus", "SmTorus (no SurfaceKind)"),
+            // the DISPATCH GAP of `Surface::read_from_db` (issue #76) belongs to
+            // `surface.surface_p2`, not to the analytic surface units (all green)
+            15012 => ("surface.surface_p2", "SurfaceKind::Cone (SmCone dispatch)"),
+            15013 => ("surface.surface_p2", "SurfaceKind::Cone (SmCylinder dispatch)"),
+            15014 => ("surface.surface_p2", "SurfaceKind::Sphere (SmSphere dispatch)"),
+            15015 => ("surface.surface_p2", "SurfaceKind::Torus (SmTorus dispatch)"),
             15030 => ("surface.surf_of_extrusion_p2", "SurfaceKind::SurfOfExtrusion"),
-            _ => ("topology.brep_p7", "SmBrep::ReadFromFile"),
+            _ => ("topology.brep_p10", "SmBrep::MakeTopologyFromData"),
         };
         return Some(Output::deferred(unit, symbol));
     }
     for t in [curve_of(Some(e)), curve_of(other)] {
         if t >= 0 && !EXACT_CURVES.contains(&t) {
-            return Some(Output::deferred("topology.brep_p7", "SmBrep::ReadFromFile"));
+            return Some(Output::deferred(
+                "topology.brep_p10",
+                "SmBrep::MakeTopologyFromData",
+            ));
         }
     }
     None
@@ -1262,7 +1366,7 @@ fn run_rust_brep(b: &mut Brep, op: &OpIn) -> Result<Output, Fail> {
         }
         OpIn::Collect { fu, threshold } => {
             let mut list = Vec::new();
-            eu1::faceuse_collect_adjacent(b, FaceuseId::from_index(*fu as u32), &mut list, *threshold)?;
+            eu1::faceuse_collect_adjacent(&Kernel::default(), b, FaceuseId::from_index(*fu as u32), &mut list, *threshold)?;
             Ok(Output::new()
                 .int("status", 0)
                 .ints("list", list.into_iter().map(|x| i64::from(x.index())).collect::<Vec<_>>()))
@@ -1339,7 +1443,7 @@ fn run_rust_brep(b: &mut Brep, op: &OpIn) -> Result<Output, Fail> {
             let mut vals: Vec<f64> = Vec::new();
             match which {
                 0 => out.push(flag(eu1::max_edge_face_gap(&Kernel::default(), b, e, *f)?.is_some())),
-                1 => out.push(flag(eu1::edge_ccw_edge_gap(b, e, *f)?.is_some())),
+                1 => out.push(flag(eu1::edge_ccw_edge_gap(&Kernel::default(), b, e, *f)?.is_some())),
                 2 => match eu1::calc_max_edge_face_gap(&Kernel::default(), b, e, *f) {
                     Ok(g) => {
                         out.extend([0.0, flag(*want_out && g.is_init())]);
@@ -1350,7 +1454,7 @@ fn run_rust_brep(b: &mut Brep, op: &OpIn) -> Result<Output, Fail> {
                     Err(x) if x.is_unported() => return Err(x.into()),
                     Err(x) => out.extend([status_of(&x), 0.0]),
                 },
-                _ => match eu1::calc_edge_ccw_edge_gap(b, e, *want_out, *f) {
+                _ => match eu1::calc_edge_ccw_edge_gap(&Kernel::default(), b, e, *want_out, *f) {
                     Ok(g) => {
                         out.extend([0.0, flag(g.is_some_and(|g| g.is_init()))]);
                         if let Some(g) = g.filter(solidcore::heal::gap::EdgeEdgeGap::is_init) {
@@ -1425,7 +1529,7 @@ pub(crate) fn bspline_of(c: &CrvIn) -> Result<BSplineCurve, HarnessError> {
     Ok(BSplineCurve::from_nurb(cur, c.dim, false))
 }
 
-fn surface_of(s: &SrfIn) -> Result<Surface, HarnessError> {
+pub(crate) fn surface_of(s: &SrfIn) -> Result<Surface, HarnessError> {
     match s {
         SrfIn::Plane { o, n } => Ok(Surface::from(Plane::from_normal(
             Vec3::from_array(*o),

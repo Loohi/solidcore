@@ -55,6 +55,7 @@
 //! (see [`check`]), and `ReadDb` text in a strict token grammar without the reader's
 //! null or uninitialised cases.
 
+use crate::validate::bad;
 use crate::{call_with_buffer, FfiError};
 
 /// Most maps in a volume chain.
@@ -157,10 +158,6 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
-
 /// The class of one map of a chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -185,11 +182,7 @@ struct Map {
     orient: bool,
 }
 
-/// Sequential reader over the input, mirroring the shim's reads.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
+crate::reader::unit_reader!(MAX_COORD);
 
 impl Reader<'_> {
     fn num(&mut self) -> Result<f64, FfiError> {
@@ -731,7 +724,7 @@ pub fn check_text(t: i64, data: &[u8]) -> Result<(), FfiError> {
 ///
 /// [`FfiError::InvalidArgument`] naming the first problem.
 pub fn check(op: Op, input: &[f64], data: &[u8]) -> Result<(), FfiError> {
-    let mut r = Reader { input, at: 0 };
+    let mut r = Reader::new(input);
     if op == Op::ReadDb {
         let t = r.num()?;
         if t.fract() != 0.0 {

@@ -109,7 +109,9 @@ fn surface_approx_tol_3d(
         // SmApproxTol3d(.5 * GetZoneTol3d(pSurf)), the face's stored zone tolerance
         return Ok(approx_tol3d(k, 0.5 * zone));
     }
-    if surface.owner().is_some() {
+    // SmTol::GetApproxTol3d(this) = .5 * GetZoneTol3d(this): GetFace() ? its tolerance
+    // : the system's (a surface owned by an offset with no face uses the latter)
+    if surface.face()?.is_some() {
         // UNPORTED(topology.face_p2): SmFace::GetTolerance of the owner, for the callers
         // that cannot pass it (a surface does not reach its B-rep; justified: plan/findings.md,
         // heal.face_props, "Why UNPORTED(topology.face_p2) stays"); the face props pass it through `get_singularities_of_face`
@@ -125,12 +127,15 @@ fn surface_approx_tol_3d(
 /// surface, a plane or a surface of revolution); `None` for the other kinds
 /// (`SM_CAST_NONNULL_PTR(SmBSplineSurface, ..)` is null, so `SmTemporaryChangeValue`
 /// changes a local instead). An `SmSTEPSurface` is an `SmSurface`, not a B-spline surface.
-fn out_of_bounds_enabled(surface: &Surface) -> Option<bool> {
+pub(crate) fn out_of_bounds_enabled(surface: &Surface) -> Option<bool> {
     match surface.kind() {
         SurfaceKind::BSpline(s) => Some(s.is_out_of_bounds_enabled()),
         SurfaceKind::Plane(s) => Some(s.is_out_of_bounds_enabled()),
         SurfaceKind::SurfOfRevolution(s) => Some(s.is_out_of_bounds_enabled()),
-        SurfaceKind::CurveBounded(_) | SurfaceKind::Step(_) | SurfaceKind::SrfInVolume(_) => None,
+        SurfaceKind::OffsetSurface(_)
+        | SurfaceKind::CurveBounded(_)
+        | SurfaceKind::Step(_)
+        | SurfaceKind::SrfInVolume(_) => None,
     }
 }
 
@@ -138,12 +143,15 @@ fn out_of_bounds_enabled(surface: &Surface) -> Option<bool> {
 /// kinds). Only the `SmBSplineSurface` member changes, as `SmTemporaryChangeValue`
 /// through `GetOutOfBoundsEnabled()` does: a surface of revolution's generator keeps its
 /// own flag (the virtual `SmSurfOfRevolution::SetOutOfBoundsEnabled` is not called).
-fn set_out_of_bounds_enabled(surface: &mut Surface, enabled: bool) {
+pub(crate) fn set_out_of_bounds_enabled(surface: &mut Surface, enabled: bool) {
     match surface.kind_mut() {
         SurfaceKind::BSpline(s) => *s.out_of_bounds_enabled_mut() = enabled,
         SurfaceKind::Plane(s) => s.set_out_of_bounds_enabled(enabled),
         SurfaceKind::SurfOfRevolution(s) => *s.base_mut().out_of_bounds_enabled_mut() = enabled,
-        SurfaceKind::CurveBounded(_) | SurfaceKind::Step(_) | SurfaceKind::SrfInVolume(_) => {}
+        SurfaceKind::OffsetSurface(_)
+        | SurfaceKind::CurveBounded(_)
+        | SurfaceKind::Step(_)
+        | SurfaceKind::SrfInVolume(_) => {}
     }
 }
 

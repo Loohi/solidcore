@@ -418,6 +418,8 @@ fn ints(v: &[f64]) -> Vec<i64> {
 struct Rd<'a> {
     v: &'a [f64],
     at: usize,
+    /// The type of the first face surface held only as its B-spline part.
+    inexact: Option<i64>,
 }
 
 impl Rd<'_> {
@@ -517,7 +519,26 @@ fn read_surface(rd: &mut Rd<'_>) -> Result<Option<Surface>, HarnessError> {
     if kind == -1.0 {
         return Ok(None);
     }
-    if kind != 0.0 {
+    if kind == 3.0 {
+        // an SmPlane with its frame, UV scale and analytic domain
+        let mut v = [0.0; 15];
+        for x in &mut v {
+            *x = rd.num()?;
+        }
+        let [ox, oy, oz, xx, xy, xz, yx, yy, yz, su, sv, u0, v0, u1, v1] = v;
+        return Ok(Some(Surface::from(solidcore::surface::plane::Plane::new(
+            Vec3::new(ox, oy, oz),
+            Vec3::new(xx, xy, xz),
+            Vec3::new(yx, yy, yz),
+            solidcore::Vec2::new(su, sv),
+            &solidcore::geom::extent2d::Extent2d::from_bounds(u0, v0, u1, v1),
+        ))));
+    }
+    if kind == 4.0 {
+        // a subclass held as its B-spline part: the Rust surface is a stand-in
+        let ty = rd.num()? as i64;
+        rd.inexact.get_or_insert(ty);
+    } else if kind != 0.0 {
         return Err(harness("export: a surface is not a B-spline"));
     }
     let oob = rd.num()? != 0.0;
@@ -549,27 +570,35 @@ fn read_surface(rd: &mut Rd<'_>) -> Result<Option<Surface>, HarnessError> {
 }
 
 /// Builds the Rust B-rep from the shim's export (see the module docs).
-fn import(ex: &[f64]) -> Result<Brep, HarnessError> {
+fn import(ex: &[f64]) -> Result<(Brep, Option<i64>), HarnessError> {
     let c = ffi::counts(ex).ok_or_else(|| harness("import of a failed build"))?;
     let [n_r, n_s, n_fu, n_f, n_lu, n_l, n_eu, n_e, n_vu, n_v] = c;
-    let mut rd = Rd { v: ex, at: 1 };
+    let mut rd = Rd { v: ex, at: 1, inexact: None };
     let validate_only = rd.num()? != 0.0;
     rd.at = 12;
 
+    // Region shell lists, shell types and face-use lists as exported (void flags
+    // are not exported and stay 0); wire/vertex shell heads are set after import.
     let mut regions = Vec::new();
     for _ in 0..n_r {
         let in_brep = rd.num()? != 0.0;
-        rd.list()?;
-        regions.push(Region { in_brep });
+        let shells = super::topology_vertexuse::region_shell_list(rd.list()?)?;
+        regions.push(Region {
+            in_brep,
+            shells,
+            ..Region::default()
+        });
     }
     let mut shells = Vec::new();
     for _ in 0..n_s {
         let region = opt(rd.idx()?, RegionId::from_index)?;
-        rd.idx()?;
-        rd.list()?;
+        let (shell_type, members) =
+            super::topology_vertexuse::shell_members(rd.idx()?, rd.list()?)?;
         shells.push(Shell {
             faces: Vec::new(),
             region,
+            shell_type,
+            members,
         });
     }
     let mut faceuses = Vec::new();
@@ -589,14 +618,18 @@ fn import(ex: &[f64]) -> Result<Brep, HarnessError> {
             mate,
             orientation,
             loopuses,
+            sibling_links: None,
         });
     }
     let mut surfaces = Vec::new();
     for _ in 0..n_f {
         let surface = read_surface(&mut rd)?;
+        // `GetUVDomain` and `GetTolerance`
+        let (u0, v0, u1, v1) = (rd.num()?, rd.num()?, rd.num()?, rd.num()?);
+        let tolerance = rd.num()?;
         // `GetUpwardFaceuse` (`m_pFU`)
         let faceuse = opt(rd.idx()?, FaceuseId::from_index)?;
-        surfaces.push((surface, faceuse));
+        surfaces.push((surface, faceuse, solidcore::geom::extent2d::Extent2d::from_bounds(u0, v0, u1, v1), tolerance));
     }
     let mut loopuses = Vec::new();
     for _ in 0..n_lu {
@@ -742,6 +775,14 @@ fn import(ex: &[f64]) -> Result<Brep, HarnessError> {
             poly_vertex: None,
         });
     }
+    let infinite_region = super::topology_vertexuse::read_shell_state(
+        ex,
+        &mut rd.at,
+        &mut regions,
+        &mut shells,
+        &mut vertices,
+        &mut faceuses,
+    )?;
     if rd.at != ex.len() {
         return Err(harness("export: trailing data"));
     }
@@ -749,6 +790,7 @@ fn import(ex: &[f64]) -> Result<Brep, HarnessError> {
     // assemble (skeleton fields filled minimally)
     let mut b = Brep::new();
     b.set_validate_only(validate_only);
+    b.set_infinite_region_record(infinite_region);
     for r in regions {
         b.add_region_record(r).map_err(|e| harness(e.to_string()))?;
     }
@@ -769,17 +811,15 @@ fn import(ex: &[f64]) -> Result<Brep, HarnessError> {
             .collect();
         b.add_shell_record(s).map_err(|e| harness(e.to_string()))?;
     }
-    for (f, (surface, faceuse)) in surfaces.into_iter().enumerate() {
-        let shell = face_shells
-            .get(f)
-            .copied()
-            .unwrap_or(ShellId::from_index(0));
-        // The domain, rectangular-trim flag and tolerance are not exported by this shim:
-        // `SmFace()` defaults (`RefreshTolerance` reads the tolerance only to defer at the
-        // unported `SmFace::SetTolerance`).
+    for (f, (surface, faceuse, uv_domain, tolerance)) in surfaces.into_iter().enumerate() {
+        let shell = face_shells.get(f).copied().unwrap_or(ShellId::from_index(0));
+        // The rectangular-trim flag is not exported (`SmFace()` default); the UV domain and
+        // tolerance are (the vertex/face gaps solve against them).
         b.add_face_record(Face {
             surface,
             faceuse,
+            uv_domain,
+            tolerance,
             ..Face::new(shell)
         })
         .map_err(|e| harness(e.to_string()))?;
@@ -833,7 +873,7 @@ fn import(ex: &[f64]) -> Result<Brep, HarnessError> {
         b.add_vertexuse_record(vu)
             .map_err(|e| harness(e.to_string()))?;
     }
-    Ok(b)
+    Ok((b, rd.inexact))
 }
 
 fn id<I: Copy>(o: Option<I>, f: impl Fn(I) -> u32) -> i64 {
@@ -1368,7 +1408,7 @@ fn run_cpp(i: &Inputs) -> Result<Output, HarnessError> {
     let Some(c) = ffi::counts(&ex) else {
         return Ok(build_failure(&ex));
     };
-    let b = import(&ex)?;
+    let (b, _) = import(&ex)?;
     let op = match resolve(&i.op, c, &b) {
         Ok(op) => op,
         Err(o) => return Ok(*o),
@@ -1485,11 +1525,29 @@ fn run_rust(i: &Inputs) -> Result<Output, HarnessError> {
     let Some(c) = ffi::counts(&ex) else {
         return Ok(build_failure(&ex));
     };
-    let mut b = import(&ex)?;
+    let (mut b, inexact) = import(&ex)?;
     let op = match resolve(&i.op, c, &b) {
         Ok(op) => op,
         Err(o) => return Ok(*o),
     };
+    // The gap, topological-vertex and pole queries solve against the face surfaces: a face
+    // surface the export holds only as its B-spline part (a cone, sphere, torus, revolution
+    // or extrusion subclass) is a stand-in whose solves differ from the analytic ones.
+    if let (Some(ty), OpIn::Gaps { .. } | OpIn::Topological { .. } | OpIn::OnPole { .. }) =
+        (inexact, &op)
+    {
+        let (unit, symbol) = match ty {
+            // the DISPATCH GAP of `Surface::read_from_db` (issue #76) belongs to
+            // `surface.surface_p2`, not to the analytic surface units (all green)
+            15012 => ("surface.surface_p2", "SurfaceKind::Cone (SmCone dispatch)"),
+            15013 => ("surface.surface_p2", "SurfaceKind::Cone (SmCylinder dispatch)"),
+            15014 => ("surface.surface_p2", "SurfaceKind::Sphere (SmSphere dispatch)"),
+            15015 => ("surface.surface_p2", "SurfaceKind::Torus (SmTorus dispatch)"),
+            15030 => ("surface.surf_of_extrusion_p2", "SurfaceKind::SurfOfExtrusion"),
+            _ => ("topology.brep_p10", "SmBrep::MakeTopologyFromData"),
+        };
+        return Ok(Output::deferred(unit, symbol));
+    }
     match run_rust_op(&mut b, &op) {
         Ok(o) => Ok(o),
         Err(Fail::Solid(e)) => rust_err(&e),

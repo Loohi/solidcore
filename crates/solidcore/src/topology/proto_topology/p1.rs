@@ -127,7 +127,8 @@
 //!   upstream) treats it as non-topology.
 //! - **Constructor tolerance.** `SmProtoTopologyManager` only reads the topology
 //!   intersector's `GetThisApproxTol3d`, passed as a value; the override tolerance is
-//!   overwritten by it, as upstream.
+//!   overwritten by it, as upstream. Each B-rep is passed as its handle and its
+//!   [`Brep`](crate::topology::Brep), read only by the fallback tolerance.
 //! - **Uninitialised members** of objects upstream allocates with `smos_Calloc` (the
 //!   final edges of an edge definition) start as `None`.
 //! - **Out-params** become return values: `IsInList`'s index, `FindProtoVertex`'s
@@ -158,7 +159,7 @@
 //! - **Callees in units not ported yet** return [`SolidError::Unported`](crate::SolidError):
 //!   `SmBrep::GetTolerance` (`topology.brep_p1`) in the manager's fallback tolerance,
 //!   `SmFace::GetEdges` (`topology.face_p4`) for edges sharing a face in
-//!   `sm_FindEDOnDegenFace`, and `SmBrep::Transform` (`topology.brep_p5`).
+//!   `sm_FindEDOnDegenFace`, and part 5's `SmBrep::Transform` reaches `SmBrep::Notify` (`topology.brep_p2`).
 //!   `SmProtoVertex::ContainsPoint` / `DistanceTo` (unit `query.face_p2`) are
 //!   [`crate::query::face::p2`]'s.
 //! - **Copy map.** `SetAt` takes two objects and `GetAt` of an object without an entry
@@ -198,14 +199,16 @@ mod tests {
     use crate::geom::attribute::{Attribute, AttributeStore, Behavior, ObjectKey};
     use crate::geom::axis2_placement::Axis2Placement;
     use crate::geom::extent1d::Extent1d;
+    use crate::geom::tol::zone_tol3d;
     use crate::intersect::point_class::{
         ClassGeometry, ClassObject, ClassObjectKind, PointClassType,
     };
     use crate::kernel::Kernel;
-    use crate::math::{Point3, Vec3};
+    use crate::math::{min2, Point3, Vec3, EFF_ZERO};
     use crate::surface::surface::Surface;
     use crate::surface::volume::Volume;
     use crate::topology::topology::{Topology, TopologyRecords};
+    use crate::topology::Brep;
 
     /// A store of owning objects keyed by index.
     #[derive(Default)]
@@ -470,7 +473,29 @@ mod tests {
 
     fn manager() -> ProtoTopologyManager<H> {
         let b = H(100, ClassObjectKind::Other);
-        ProtoTopologyManager::new(b, b, b, 1e-5, 1e-3, -1.0).unwrap()
+        let e = Brep::new();
+        ProtoTopologyManager::new(&Kernel::default(), (b, &e), (b, &e), b, 1e-5, 1e-3, -1.0)
+            .unwrap()
+    }
+
+    #[test]
+    fn manager_tolerance_falls_back_to_the_breps() {
+        let k = Kernel::default();
+        let b = H(100, ClassObjectKind::Other);
+        let e1 = Brep::new();
+        let mut e2 = Brep::new();
+        e2.set_tolerance(1e-4);
+        // no edges: both edge sizes are 0.001, so min(1.25 * tol, 0.0005)
+        let expect = (e1.tolerance() + e2.tolerance()) * 1.25;
+        for approx in [0.0, -1.0, 1e-13] {
+            let m = ProtoTopologyManager::new(&k, (b, &e1), (b, &e2), b, approx, 0.0, 0.5).unwrap();
+            assert_eq!(m.tolerance(&k), zone_tol3d(&k, min2(expect, 0.0005)));
+        }
+        let m = ProtoTopologyManager::new(&k, (b, &e1), (b, &e2), b, EFF_ZERO, 0.0, 0.5).unwrap();
+        assert_eq!(m.tolerance(&k), zone_tol3d(&k, EFF_ZERO));
+        e2.set_tolerance(1.0);
+        let m = ProtoTopologyManager::new(&k, (b, &e1), (b, &e2), b, 0.0, 0.0, 0.5).unwrap();
+        assert_eq!(m.tolerance(&k), zone_tol3d(&k, 0.0005));
     }
 
     #[test]
@@ -665,10 +690,10 @@ mod tests {
 
     #[test]
     fn api_transforms() {
-        let k = Kernel::default();
+        let mut k = Kernel::default();
         let mut c = line([1.0, 0.0, 0.0], [2.0, 0.0, 0.0]);
         api_transform::api_translate(
-            &k,
+            &mut k,
             Some(TransformObject::Curve(&mut c)),
             Vec3::new(0.0, 1.0, 0.0),
         )
@@ -677,7 +702,7 @@ mod tests {
         let p = c.evaluate_point(ivl.min()).unwrap();
         assert!((p - Point3::new(1.0, 1.0, 0.0)).length() < 1e-12);
         api_transform::api_scale_by_pt(
-            &k,
+            &mut k,
             Some(TransformObject::Curve(&mut c)),
             Point3::new(1.0, 1.0, 0.0),
             Vec3::new(2.0, 2.0, 2.0),
@@ -689,7 +714,7 @@ mod tests {
 
         assert!(matches!(
             api_transform::api_rotate(
-                &k,
+                &mut k,
                 Some(TransformObject::Curve(&mut c)),
                 Point3::new(0.0, 0.0, 0.0),
                 Vec3::new(0.0, 0.0, 0.0),
@@ -698,16 +723,20 @@ mod tests {
             Err(SolidError::InvalidInput { .. })
         ));
         assert!(matches!(
-            api_transform::api_scale(&k, None, Vec3::new(1.0, 1.0, 1.0)),
+            api_transform::api_scale(&mut k, None, Vec3::new(1.0, 1.0, 1.0)),
             Err(SolidError::InvalidInput { .. })
         ));
         assert!(matches!(
-            api_transform::api_scale(&k, Some(TransformObject::Other), Vec3::new(0.0, 1.0, 1.0)),
+            api_transform::api_scale(
+                &mut k,
+                Some(TransformObject::Other),
+                Vec3::new(0.0, 1.0, 1.0)
+            ),
             Err(SolidError::InvalidInput { .. })
         ));
         assert!(api_transform::api_translate(
-            &k,
-            Some(TransformObject::Brep),
+            &mut k,
+            Some(TransformObject::Brep(&mut Brep::new())),
             Vec3::new(1.0, 0.0, 0.0)
         )
         .is_err_and(|e| e.is_unported()));
@@ -724,11 +753,17 @@ mod tests {
         };
 
         let mut b = Brep::new();
-        let r = b.add_region_record(Region { in_brep: true }).unwrap();
+        let r = b
+            .add_region_record(Region {
+                in_brep: true,
+                ..Region::default()
+            })
+            .unwrap();
         let s = b
             .add_shell_record(Shell {
                 faces: Vec::new(),
                 region: Some(r),
+                ..Shell::default()
             })
             .unwrap();
         let v: Vec<VertexId> = (0..3)

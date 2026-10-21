@@ -54,16 +54,13 @@
 //! tolerances, join directions `U` / `V`, at least one n-sided curve, knot indices
 //! inside the knot array, `p >= 1` for `MakeKnots`.
 
+use crate::validate::{bad, NOW, NOZ};
 use crate::{call_with_buffer, FfiError};
 
 /// Largest control point index accepted by [`eval`].
 pub const MAX_INDEX: usize = 2048;
 /// Largest NURB degree accepted by [`eval`].
 pub const MAX_DEGREE: usize = 17;
-/// `NL_NOZ`.
-const NOZ: f64 = f64::MAX;
-/// `NL_NOW`.
-const NOW: f64 = -f64::MAX;
 /// `NL_MAXDER`.
 const MAX_DERIVATIVE: usize = 4;
 /// `SM_SF_POLYNOMIAL`.
@@ -143,27 +140,9 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
-
-/// Sequential reader over the input.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
+crate::reader::unit_reader!();
 
 impl Reader<'_> {
-    fn num(&mut self) -> Result<f64, FfiError> {
-        let v = self
-            .input
-            .get(self.at)
-            .copied()
-            .ok_or_else(|| bad("input too short"))?;
-        self.at += 1;
-        Ok(v)
-    }
-
     fn finite(&mut self) -> Result<f64, FfiError> {
         let v = self.num()?;
         if !v.is_finite() {
@@ -182,25 +161,6 @@ impl Reader<'_> {
             return Err(bad(format!("{what}: need a positive value")));
         }
         Ok(v)
-    }
-
-    fn index(&mut self, max: usize) -> Result<usize, FfiError> {
-        let v = self.num()?;
-        if v.fract() != 0.0 || v < 0.0 || v > max as f64 {
-            return Err(bad(format!("bad index/count {v}")));
-        }
-        Ok(v as usize)
-    }
-
-    fn flag(&mut self) -> Result<bool, FfiError> {
-        Ok(self.index(1)? == 1)
-    }
-
-    fn done(&self) -> Result<(), FfiError> {
-        if self.at != self.input.len() {
-            return Err(bad("trailing input"));
-        }
-        Ok(())
     }
 }
 
@@ -463,7 +423,7 @@ fn validate_surface_op(
 }
 
 fn validate(op: Op, input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     let ctor = rd.index(2)?;
     if (ctor == 0) != op.is_static() {
         return Err(bad("static ops need ctor 0, surface ops a constructor"));

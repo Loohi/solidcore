@@ -19,11 +19,14 @@
 //! and vertex/face gaps. Opaque handles still defer. The SSS refinement block
 //! (upstream lines 14826–15095) needs mutable curve/topology ownership and defers
 //! before editing geometry; this block and the edge branch of `insert_solutions`
-//! remain unported. The SSS block's missing callees are the boolean mate lookups;
-//! its preceding mutations are not implemented. Ordinary vertex projections are
+//! remain unported. That block of `IntersectVertices` (SmCurveClass.cpp
+//! 14826-15095) is this unit's own unported code (`UNPORTED(intersect.curve_class_p5)`);
+//! the mate lookups it ends with are ported in `boolean.topology_intersector_p1`.
+//! Ordinary vertex projections are
 //! compared; large-gap projections remain uncertified because the oracle vertices
 //! have no vertexuse and its Rust adapter supplies no vertex/face gap.
-//! Part 2 remains an explicit dependency; parts 6/7 are wired from main. The fixup
+//! Parts 2, 6 and 7 are wired; the edge branch of `insert_solutions` stops at
+//! `SmEdge::GetCurve` on the opaque edge handle (`UNPORTED(topology.edge)`). The fixup
 //! restart loop is bounded by three times the initial interval count plus one: fixes remove an interval or
 //! snap an edge classification to a vertex. Undefined
 //! native null dereferences and unequal paired classification lengths return errors.
@@ -199,7 +202,7 @@ impl<O: ClassObject> CurveClassification<O> {
         )
     }
 
-    // Remaining dependency boundaries belong to the independent p2/p7 ports.
+    // Thin wrappers over the part-2/6/7 members.
     fn p5_point_class_by_index(
         classification: &Self,
         index: usize,
@@ -208,23 +211,21 @@ impl<O: ClassObject> CurveClassification<O> {
     }
 
     fn p5_classify_crv_loc_by_index(
-        _classification: &Self,
-        _geometry: &impl ClassGeometry<O>,
-        _index: usize,
+        classification: &Self,
+        geometry: &impl ClassGeometry<O>,
+        index: usize,
     ) -> Result<(Point3, f64)> {
-        // UNPORTED(intersect.curve_class_p2): SmCurveClassification::GetClassifyCrvLoc
-        Err(SolidError::unported(
-            "SmCurveClassification::GetClassifyCrvLoc",
-            "intersect.curve_class_p2",
-        ))
+        classification.classify_crv_loc_by_index(geometry, index)
     }
 
     fn p5_merge_interval(
         classification: &mut Self,
+        k: &Kernel,
+        geometry: &impl ClassGeometry<O>,
         index: usize,
         vertices_only: bool,
     ) -> Result<MergedTopology<O>> {
-        let merged = classification.merge_interval(index, vertices_only)?;
+        let merged = classification.merge_interval(k, geometry, index, vertices_only)?;
         Ok(MergedTopology {
             faces: merged.new_faces,
             edges: merged.new_edges,
@@ -504,16 +505,18 @@ impl<O: ClassObject> CurveClassification<O> {
                             s.start.solution_value > 1e-7 && s.start.solution_value < tolerance
                         })))
             {
-                // UNPORTED(boolean.topology_intersector_p1): SmTopologyIntersector::GetOtherMate / GetBrepMate
-                // The entire SSS block (14826–15095) remains unported, including
-                // knot snapping, surface solves, through-point edits and clearing
-                // edgeuse UV trims. Those prerequisites have ported callees but
-                // need mutable curve/topology ownership here. Defer before any
-                // mutation; the actual unported callees are the later mate lookups.
-                // This block does not call sm_RefineCCIToSurfaces.
+                // UNPORTED(intersect.curve_class_p5): SmCurveClassification::IntersectVertices
+                // This unit's own unported GWC:CHANGED_SSS block of IntersectVertices
+                // (SmCurveClass.cpp:14826-15095): knot snapping (SnapToKnots), local and
+                // global point solves, sm_SetXSectCurveThroughPoint, SmVertex::GetEdges /
+                // SmEdge::GetEdgeuses walks, SetUVTrimCurve, then the mate lookups
+                // (SmTopologyIntersector::GetOtherMate / GetBrepMate, ported in
+                // boolean.topology_intersector_p1). Porting it needs mutable curve and B-rep
+                // access here plus a mate-lookup closure. Deferred before any mutation. This
+                // block does not call sm_RefineCCIToSurfaces.
                 return Err(SolidError::unported(
-                    "SmTopologyIntersector::GetOtherMate / GetBrepMate (unported p5 SSS block)",
-                    "boolean.topology_intersector_p1",
+                    "SmCurveClassification::IntersectVertices (SSS block, SmCurveClass.cpp:14826-15095)",
+                    "intersect.curve_class_p5",
                 ));
             }
             for solution in solutions.as_slice() {
@@ -604,11 +607,11 @@ impl<O: ClassObject> CurveClassification<O> {
             {
                 continue;
             }
-            scratch = Self::p5_merge_interval(self, i, false)?;
+            scratch = Self::p5_merge_interval(self, k, geometry, i, false)?;
             append_unique(&mut out.faces, scratch.faces.iter().copied());
             append_unique(&mut out.edges, scratch.edges.iter().copied());
             append_unique(&mut out.vertices, scratch.vertices.iter().copied());
-            scratch_other = Self::p5_merge_interval(other, i, false)?;
+            scratch_other = Self::p5_merge_interval(other, k, geometry, i, false)?;
             append_unique(&mut out_other.faces, scratch_other.faces.iter().copied());
             append_unique(&mut out_other.edges, scratch_other.edges.iter().copied());
             append_unique(
@@ -659,8 +662,13 @@ impl<O: ClassObject> CurveClassification<O> {
     ///
     /// # Errors
     /// Unfinished topology merging defers when an interval requires graph mutation.
-    pub fn merge_intervals(&mut self, vertices_only: bool) -> Result<MergedTopology<O>> {
-        self.merge_intervals_with_partial(vertices_only)
+    pub fn merge_intervals(
+        &mut self,
+        k: &Kernel,
+        geometry: &impl ClassGeometry<O>,
+        vertices_only: bool,
+    ) -> Result<MergedTopology<O>> {
+        self.merge_intervals_with_partial(k, geometry, vertices_only)
             .map_err(|e| e.error)
     }
 
@@ -668,9 +676,13 @@ impl<O: ClassObject> CurveClassification<O> {
     /// Callers that ignore the native status must still consume its partial lists.
     pub(crate) fn merge_intervals_with_partial(
         &mut self,
+        k: &Kernel,
+        geometry: &impl ClassGeometry<O>,
         vertices_only: bool,
     ) -> Result<MergedTopology<O>, PartialMergeError<O>> {
-        self.merge_intervals_using(vertices_only, Self::p5_merge_interval)
+        self.merge_intervals_using(vertices_only, |c, j, v| {
+            Self::p5_merge_interval(c, k, geometry, j, v)
+        })
     }
 
     fn merge_intervals_using(
@@ -733,14 +745,11 @@ pub fn insert_solutions<O: ClassObject>(
         .surface(object)
         .is_some_and(|s| matches!(s.kind(), SurfaceKind::Plane(_)));
     if object.class_kind() == ClassObjectKind::Edge {
-        // UNPORTED(intersect.curve_class_p2): sm_InsertSolutions edge branch (InsertAt)
-        // The unported branch also needs p7 point-index queries, vertex snapping,
-        // sm_RefineCCIToSurfaces and the 2D class object; resolving an edge curve
-        // alone does not implement it.
-        return Err(SolidError::unported(
-            "sm_InsertSolutions edge branch (InsertAt / GetPointClassByIndex)",
-            "intersect.curve_class_p2",
-        ));
+        // UNPORTED(topology.edge): SmEdge::GetCurve (upstream's first call on an edge
+        // target; an opaque edge handle carries no B-rep to resolve it, as in part 3).
+        // The edge branch itself (vertex snapping, InsertAt, GetPointClassByIndex,
+        // sm_RefineCCIToSurfaces, the 2D class object) is still to be ported with it.
+        return Err(SolidError::unported("SmEdge::GetCurve", "topology.edge"));
     }
     if target.is_none() && !plane {
         return Err(SolidError::sm_err(OP));

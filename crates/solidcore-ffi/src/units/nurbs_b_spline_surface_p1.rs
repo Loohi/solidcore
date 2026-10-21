@@ -63,17 +63,13 @@
 //! the knot range), well-formed curves for `Sweep`, and database streams holding every
 //! value `ReadFromDB` reads (ASCII: one group per line, plain numbers).
 
+use crate::validate::{bad, NOW, NOZ};
 use crate::{call_with_buffer, FfiError};
 
 /// Largest control point index accepted by [`eval`].
 pub const MAX_INDEX: usize = 512;
 /// Largest NURB degree accepted by [`eval`].
 pub const MAX_DEGREE: usize = 17;
-/// `NL_NOZ`.
-const NOZ: f64 = f64::MAX;
-/// `NL_NOW`.
-const NOW: f64 = -f64::MAX;
-
 /// How `this` is built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ctor {
@@ -212,27 +208,9 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
-
-/// Sequential reader over the input.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
+crate::reader::unit_reader!();
 
 impl Reader<'_> {
-    fn num(&mut self) -> Result<f64, FfiError> {
-        let v = self
-            .input
-            .get(self.at)
-            .copied()
-            .ok_or_else(|| bad("input too short"))?;
-        self.at += 1;
-        Ok(v)
-    }
-
     fn finite(&mut self) -> Result<f64, FfiError> {
         let v = self.num()?;
         if !v.is_finite() {
@@ -243,25 +221,6 @@ impl Reader<'_> {
 
     fn finites(&mut self, k: usize) -> Result<Vec<f64>, FfiError> {
         (0..k).map(|_| self.finite()).collect()
-    }
-
-    fn index(&mut self, max: usize) -> Result<usize, FfiError> {
-        let v = self.num()?;
-        if v.fract() != 0.0 || v < 0.0 || v > max as f64 {
-            return Err(bad(format!("bad index/count {v}")));
-        }
-        Ok(v as usize)
-    }
-
-    fn flag(&mut self) -> Result<bool, FfiError> {
-        Ok(self.index(1)? == 1)
-    }
-
-    fn done(&self) -> Result<(), FfiError> {
-        if self.at != self.input.len() {
-            return Err(bad("trailing input"));
-        }
-        Ok(())
     }
 }
 
@@ -668,7 +627,7 @@ fn validate_surface_op(op: Op, rd: &mut Reader<'_>, three_d: Option<bool>) -> Re
 }
 
 fn validate(op: Op, input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     let (ctor, three_d) = surface_block(&mut rd)?;
     if (ctor == 0) != op.is_static() {
         return Err(bad("static ops need ctor 0, surface ops a constructor"));

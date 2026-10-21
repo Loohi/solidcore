@@ -1756,7 +1756,7 @@ fn rust_run(s: &Script) -> Result<Vec<f64>, Fail> {
                     let mut pc = PointClassification::new(zone_tol3d(&k, USE_DEFAULT));
                     let r = st(cc_mod::compute_face_point_class(
                         &k,
-                        &pool.brep,
+                        &mut pool.brep,
                         v3(*p),
                         zone_tol3d(&k, *tol),
                         fid,
@@ -3142,7 +3142,7 @@ mod tests {
                     OpIn::FacePointClass { f, p, tol, .. } => {
                         let Some(Some(EntityRef::Face(fid))) = pool.topo.get(f.unwrap()) else { panic!() };
                         let mut pc = PointClassification::new(zone_tol3d(&k, USE_DEFAULT));
-                        let ok = cc_mod::compute_face_point_class(&k, &pool.brep, v3(*p), zone_tol3d(&k, *tol), *fid, &mut pc);
+                        let ok = cc_mod::compute_face_point_class(&k, &mut pool.brep, v3(*p), zone_tol3d(&k, *tol), *fid, &mut pc);
                         if matches!(ok, Ok(true)) {
                             face_in += 1;
                         } else {

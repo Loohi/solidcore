@@ -61,6 +61,7 @@
 //! lengths of the curve's range, derivative counts up to 3, and solver branches that
 //! never reach the (dummy) curve span data.
 
+use crate::validate::{bad, euclid, NOW, NOZ};
 use crate::{call_with_buffer, FfiError};
 
 /// Largest control point index `n`.
@@ -79,9 +80,6 @@ pub const MAX_ARRAY: usize = 1024;
 pub const MAX_DB_BYTES: usize = 1 << 16;
 /// Most tree nodes.
 pub const MAX_NODES: usize = 16;
-
-const NOZ: f64 = f64::MAX;
-const NOW: f64 = -f64::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(missing_docs)]
@@ -194,48 +192,9 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
+crate::reader::unit_reader!(MAX_COORD);
 
-/// Sequential reader over the input.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn num(&mut self) -> Result<f64, FfiError> {
-        let v = self
-            .input
-            .get(self.at)
-            .copied()
-            .ok_or_else(|| bad("input too short"))?;
-        self.at += 1;
-        Ok(v)
-    }
-
-    /// A finite value of magnitude at most [`MAX_COORD`].
-    fn finite(&mut self) -> Result<f64, FfiError> {
-        let v = self.num()?;
-        if !v.is_finite() || v.abs() > MAX_COORD {
-            return Err(bad(format!("value {v} not finite or too large")));
-        }
-        Ok(v)
-    }
-
-    fn vec3(&mut self) -> Result<[f64; 3], FfiError> {
-        Ok([self.finite()?, self.finite()?, self.finite()?])
-    }
-
-    fn index(&mut self, max: usize) -> Result<usize, FfiError> {
-        let v = self.num()?;
-        if v.fract() != 0.0 || v < 0.0 || v > max as f64 {
-            return Err(bad(format!("bad index/count {v}")));
-        }
-        Ok(v as usize)
-    }
-
+impl Reader<'_> {
     /// A signed integer in `min..=max`.
     fn int(&mut self, min: i64, max: i64) -> Result<i64, FfiError> {
         let v = self.num()?;
@@ -243,27 +202,6 @@ impl<'a> Reader<'a> {
             return Err(bad(format!("bad integer {v}")));
         }
         Ok(v as i64)
-    }
-
-    fn flag(&mut self) -> Result<bool, FfiError> {
-        Ok(self.index(1)? == 1)
-    }
-
-    fn take(&mut self, k: usize) -> Result<&'a [f64], FfiError> {
-        let end = self.at.checked_add(k).ok_or_else(|| bad("overflow"))?;
-        let s = self
-            .input
-            .get(self.at..end)
-            .ok_or_else(|| bad("input too short"))?;
-        self.at = end;
-        Ok(s)
-    }
-
-    fn done(&self) -> Result<(), FfiError> {
-        if self.at != self.input.len() {
-            return Err(bad("trailing input"));
-        }
-        Ok(())
     }
 }
 
@@ -273,15 +211,6 @@ struct CurveInfo {
     bspline: bool,
     a: f64,
     b: f64,
-}
-
-fn euclid([x, y, z, w]: [f64; 4]) -> [f64; 3] {
-    let z = if z == NOZ { 0.0 } else { z };
-    if w == NOW {
-        [x, y, z]
-    } else {
-        [x / w, y / w, z / w]
-    }
 }
 
 /// A B-spline `n p m cpts knots`.
@@ -717,7 +646,7 @@ fn validate_solver(op: Op, rd: &mut Reader<'_>) -> Result<(), FfiError> {
 ///
 /// [`FfiError::InvalidArgument`] for input [`eval`] rejects.
 pub fn validate(op: Op, input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     if op.is_static() {
         validate_static(op, &mut rd)?;
     } else {

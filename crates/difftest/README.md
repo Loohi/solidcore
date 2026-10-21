@@ -9,20 +9,23 @@ compares the results. A unit may be marked `status = "green"` in
 ## Quick start
 
 ```sh
-harness/cpp/build.sh                      # once: builds bin/cpp/lib/libSM_API.a, libSMLib.a (owner: agent A)
+scripts/fetch-cpp.sh                      # once: bin/cpp/lib/libSM_API.a, libSMLib.a (prebuilt; else runs harness/cpp/build.sh)
 export CARGO_BUILD_JOBS=2                 # shared machine
+export RUSTC_WRAPPER=sccache              # optional: also caches the ~200 shim objects
 # --profile difftest: optimised build with overflow checks; same results as debug, ~20x faster.
 nice -n 10 cargo run --profile difftest -p difftest --features cpp -- --list
 nice -n 10 cargo run --profile difftest -p difftest --features cpp -- --unit harness.selftest
 nice -n 10 cargo run --profile difftest -p difftest --features cpp -- --unit harness.selftest --perturb   # sensitivity check
 nice -n 10 cargo run --profile difftest -p difftest --features cpp -- --green          # every status=green|partial unit
+nice -n 10 cargo run --profile difftest -p difftest --features cpp -- --green --jobs 4 # same, 4 units at a time (below)
 nice -n 10 cargo run --profile difftest -p difftest --features cpp -- --status-of nlib.knots   # prints green|partial|fail
 nice -n 10 cargo test -p difftest --features cpp                     # harness self-tests
 ```
 
 | flag | meaning |
 |---|---|
-| `--unit <id>` | run one unit (repeatable) |
+| `--unit <id>` | run one unit (repeatable; `*` and `?` match several registered runners, e.g. `--unit 'nlib.*'`) |
+| `--jobs N` / `-j N` | run N units at a time, each in its own child process (default `1`: one process, in order; `0`: every core). Output, reports and exit status are the same as with `1` (below) |
 | `--green` | all units with `status = "green"` or `"partial"` in `plan/modules.toml` (one without a runner FAILS; a `green` unit that comes out partial FAILS) |
 | `--status-of <id>` | run the unit (no report) and print only `green`, `partial` or `fail`; exit `1` on `fail` (also when no runner is registered) |
 | `--all` | every registered runner |
@@ -55,6 +58,35 @@ first topology id (`+1`, or an empty adjacency entry gains a neighbour); else
 the first float of an all-zero / non-finite array (`0`→`1e-8`, NaN→`0`,
 ±inf→∓inf). The line reports `perturbed`, `detected`, `unperturbed` (cases
 with an empty output) and `deferred` (never perturbed).
+
+## Parallel runs (`--jobs`)
+
+```sh
+nice -n 10 cargo run --profile difftest -p difftest --features cpp -- --green --jobs 0   # CI (16 vCPU)
+nice -n 10 cargo run --profile difftest -p difftest --features cpp -- --green --jobs 4   # shared machine
+```
+
+With `--jobs N` and more than one unit (`--green`, `--all`, several or a glob of
+`--unit`), every unit runs in its own child process (the same binary run as `--unit
+<id>` with the other options; the C++ kernel keeps global state, so units never share a
+process or run on threads). At most N children run at once; the queue is ordered longest
+first by the `cases_total` of each unit's previous report (in `--report-dir`, else
+`reports/difftest/`), and the next unit starts as soon as a child exits. The parent
+prints each unit's lines in the serial order and the usual summary line, so stdout,
+`reports/difftest/*.json` and the exit status are identical to a serial run's. Timing
+goes to stderr only: `difftest --jobs N: wall … s, sum of unit times … s, longest unit
+<id> … s`.
+
+A child that dies (signal, e.g. a C++ segfault, or no summary line) fails only its own
+unit: `FAIL <unit> (worker process killed by signal 11)` followed by the tail of its
+stderr; the other units still run and the run exits `1`. Ctrl-C reaches every child
+(same process group); a parent that is killed closes the children's stdin, and they exit
+too, so none outlive it.
+
+Machine budget (AGENTS.md section 2): `--jobs 0` uses every core; on a shared machine
+use `--jobs 4` or less. Memory is per child: most units peak under 0.6 GiB, the heaviest
+at 1.5-5.4 GiB (`blend.hcr` 5.4, `topology.edgeuse_p2`/`_p3` 3.0, `topology.loopuse`,
+`query.edge`, `query.api_queries` 2-2.4); `--green --jobs 8` peaked at 8.7 GiB in total.
 
 ## Fuzzing the FFI guard (`--fuzz`)
 
@@ -169,7 +201,7 @@ is `harness.selftest` (`harness_selftest.*`).
 // SPDX-License-Identifier: Apache-2.0
 // difftest shim for unit `foo.bar`. Wraps upstream <Fn> (source/SMLib/src/<File>.cpp).
 #include "sc_shim.h"
-#include <nurbs.h>            // or SmXxx.h / SmApi*.h — include dirs come from bin/cpp/compile_commands.json
+#include <nurbs.h>            // or SmXxx.h / SmApi*.h — include dirs come from bin/cpp/ffi.env
 
 SC_EXPORT int32_t sc_foo_bar_eval(const double* pts, int64_t n_pts, double t,
                                   double* out, int64_t cap, int64_t* out_len)
@@ -187,8 +219,8 @@ caller-owned flat arrays + lengths); return `int32_t` status (`0` ok, upstream
 error flag, or `SC_ERR_*`); never let exceptions or C++-allocated memory cross
 the boundary (free upstream objects inside the shim); flatten points as
 `[x0,y0,z0,x1,…]`. Shims are compiled with the same `-D`/`-I`/`-f` flags as the
-kernel (taken from `bin/cpp/compile_commands.json`, or `bin/cpp/ffi.env` if
-present — format in `crates/solidcore-ffi/build.rs`).
+kernel (taken from `bin/cpp/ffi.env`, or `bin/cpp/compile_commands.json` if
+it is missing — format in `crates/solidcore-ffi/build.rs`).
 
 Topology from C++: walk upstream lists in their native order and emit
 **traversal-order indices** (map each pointer to its first-seen index), never
@@ -401,3 +433,8 @@ errors (unreadable case, report not writable); verdicts never fail the run.
 * Reports: `reports/difftest/<unit>.json` — sorted keys, no timestamps,
   shortest round-trip floats, non-finite floats as `"NaN"`/`"inf"`; failing
   cases include inputs and up to 20 mismatches.
+* Reference platform: x86-64 Linux (as CI). Upstream converts out-of-range
+  doubles to integers in a few places (UB), and the port reproduces the
+  x86-64 result. On arm64 (macOS or Linux) the C++ saturates instead, so
+  `geom.hash_table` and `heal.heal_data_p1`-`p3` fail there (see
+  `plan/findings.md`, General). Use an x86-64 host for those units.

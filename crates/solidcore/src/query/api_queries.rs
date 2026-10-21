@@ -375,12 +375,8 @@ fn point_in_solid(target: &Brep, point: Point3, tolerance: f64) -> Result<bool> 
         .is_some_and(|(class, material)| class == PointClassType::Region && material))
 }
 
-fn brep_vertices(_brep: &Brep) -> Result<Vec<VertexId>> {
-    // UNPORTED(topology.brep_p1): SmBrep::GetVertices
-    Err(SolidError::unported(
-        "SmBrep::GetVertices",
-        "topology.brep_p1",
-    ))
+fn brep_vertices(brep: &Brep) -> Result<Vec<VertexId>> {
+    crate::topology::brep::p1::vertices(brep, None)
 }
 
 fn count_contained_samples(
@@ -490,13 +486,11 @@ pub fn brep_distance<O: SolutionObject>(
     Ok(brep_relationship(k, objects, a, b)?.distance)
 }
 
-fn brep_edges(_brep: &Brep) -> Result<Vec<EdgeId>> {
-    // UNPORTED(topology.brep_p1): SmBrep::GetEdges
-    Err(SolidError::unported("SmBrep::GetEdges", "topology.brep_p1"))
+fn brep_edges(brep: &Brep) -> Result<Vec<EdgeId>> {
+    crate::topology::brep::p1::edges(brep, None)
 }
-fn brep_faces(_brep: &Brep) -> Result<Vec<FaceId>> {
-    // UNPORTED(topology.brep_p1): SmBrep::GetFaces
-    Err(SolidError::unported("SmBrep::GetFaces", "topology.brep_p1"))
+fn brep_faces(brep: &Brep) -> Result<Vec<FaceId>> {
+    crate::topology::brep::p1::faces(brep, None)
 }
 
 /// Exact B-rep edge list (`SmApiGetEdges`). Empty lists return `SM_ERR`.
@@ -579,13 +573,9 @@ pub fn find_faces(
     tools::find_face(k, brep, id, point, keys, owners)?.ok_or(SolidError::sm_err(OP))
 }
 
-/// Manifold solid predicate (`SmApiBrepIsManifoldSolid`); waits for B-rep traversal.
-pub fn brep_is_manifold_solid(_brep: &Brep) -> Result<bool> {
-    // UNPORTED(topology.brep_p2): SmBrep::IsManifoldSolid
-    Err(SolidError::unported(
-        "SmBrep::IsManifoldSolid",
-        "topology.brep_p2",
-    ))
+/// Manifold solid predicate (`SmApiBrepIsManifoldSolid`: `SmBrep::IsManifoldSolid`).
+pub fn brep_is_manifold_solid(brep: &Brep) -> Result<bool> {
+    crate::topology::brep::p2::is_manifold_solid(brep)
 }
 
 /// Loose or tight B-rep box (`SmApiBrepBoundingBox`); missing queries are `Unported`.
@@ -602,22 +592,12 @@ pub fn brep_bounding_box(_k: &Kernel, _brep: &Brep, tight: bool) -> Result<Exten
 }
 
 /// Loose or tight face box (`SmApiFaceBoundingBox`); missing queries are `Unported`.
-pub fn face_bounding_box(_k: &Kernel, brep: &Brep, face: FaceId, tight: bool) -> Result<Extent3d> {
-    brep.face(face)?;
-    // UNPORTED(query.face_p1): SmFace::CalculateBoundingBox
-    // UNPORTED(query.face_p3): SmFace::CalculateTightBoundingBox
-    Err(SolidError::unported(
-        if tight {
-            "SmFace::CalculateTightBoundingBox"
-        } else {
-            "SmFace::CalculateBoundingBox"
-        },
-        if tight {
-            "query.face_p3"
-        } else {
-            "query.face_p1"
-        },
-    ))
+pub fn face_bounding_box(k: &Kernel, brep: &Brep, face: FaceId, tight: bool) -> Result<Extent3d> {
+    if tight {
+        brep.face(face)?;
+        return crate::query::face::p3::calculate_tight_bounding_box(k, brep, face);
+    }
+    crate::query::face::p1::calculate_bounding_box(k, brep, face, false)
 }
 
 /// Interior face point (`SmApiFaceInternalPoint`). Errors from the face query
@@ -630,7 +610,7 @@ pub fn face_internal_point(k: &Kernel, brep: &Brep, face: FaceId) -> Result<Poin
 /// classifier's vertex tests, loop containment and default classification tolerance.
 pub fn face_classify_uv(
     k: &Kernel,
-    brep: &Brep,
+    brep: &mut Brep,
     face: FaceId,
     uv: Point2,
 ) -> Result<PointClassType> {

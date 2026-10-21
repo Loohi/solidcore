@@ -51,6 +51,13 @@
 //! - **`ApproximateCurve`** in `DeformToEndPointTargets`: upstream ignores its status
 //!   and dereferences the new curve; a failure is an error here (an approximation
 //!   that is not a B-spline is `InvalidInput`).
+//! - **Curve caches.** Upstream's `DropPoint` reaches `GlobalPointSolve`, which reads
+//!   the cache kept on the curve (`GetOrCreateObjectCache`); a port without one
+//!   rebuilds it for every drop. `GlobalCoincidenceChecker` (four drops per call,
+//!   tripled per split) keeps the two curves' caches for its whole recursion instead
+//!   (`Curve::global_point_solve_cached`), built at the first global solve as
+//!   upstream's; the build is deterministic, so the solutions are those of a fresh
+//!   cache. Other `DropPoint` callers still build one per call.
 //! - **Recursion.** `GlobalCoincidenceChecker` splits closed and half closed curves
 //!   recursively; past [`MAX_COINCIDENCE_DEPTH`] nested splits it fails with
 //!   `InvalidInput` (upstream recurses without bound).
@@ -67,6 +74,7 @@ use crate::curve::curve::p3::PointSolveOptions;
 use crate::curve::curve::p5::{
     is_point_solution_across_closed_seam_boundary, local_property_analysis,
 };
+use crate::curve::curve_cache::CurveCache;
 use crate::error::{ignore_status, ignored, Result, SolidError};
 use crate::geom::extent1d::Extent1d;
 use crate::geom::extent3d::Extent3d;
@@ -506,12 +514,48 @@ impl Curve {
         guess: Option<f64>,
         op: SolverOperation,
     ) -> Result<DroppedPoint> {
+        self.drop_point_cached(
+            k,
+            interval,
+            point,
+            vec_to_inside,
+            dist_tol,
+            guess,
+            op,
+            &mut None,
+        )
+    }
+
+    /// [`Curve::drop_point`] keeping the curve's cache for the global solve in
+    /// `cache` across calls on this unchanged curve (upstream keeps it on the curve;
+    /// see [`Curve::global_point_solve_cached`]). The `SmCrvOnSurf` override keeps its
+    /// own approximation and does not use it.
+    fn drop_point_cached(
+        &self,
+        k: &Kernel,
+        interval: &Extent1d,
+        point: Point3,
+        vec_to_inside: Option<Vec3>,
+        dist_tol: f64,
+        guess: Option<f64>,
+        op: SolverOperation,
+        cache: &mut Option<CurveCache<CurveHandle>>,
+    ) -> Result<DroppedPoint> {
         match self.kind() {
             // the SmCrvOnSurf override (its cache update is lost on this copy)
             CurveKind::CrvOnSurf(c) => {
                 c.drop_point_ref(k, interval, point, vec_to_inside, dist_tol, guess, op)
             }
-            _ => self.drop_point_base(k, interval, point, vec_to_inside, dist_tol, guess, op),
+            _ => self.drop_point_base_cached(
+                k,
+                interval,
+                point,
+                vec_to_inside,
+                dist_tol,
+                guess,
+                op,
+                cache,
+            ),
         }
     }
 
@@ -529,6 +573,31 @@ impl Curve {
         dist_tol: f64,
         guess: Option<f64>,
         op: SolverOperation,
+    ) -> Result<DroppedPoint> {
+        self.drop_point_base_cached(
+            k,
+            interval,
+            point,
+            vec_to_inside,
+            dist_tol,
+            guess,
+            op,
+            &mut None,
+        )
+    }
+
+    /// [`Curve::drop_point_base`] with the global solve's curve cache kept in `cache`
+    /// (see [`Curve::drop_point_cached`]).
+    fn drop_point_base_cached(
+        &self,
+        k: &Kernel,
+        interval: &Extent1d,
+        point: Point3,
+        vec_to_inside: Option<Vec3>,
+        dist_tol: f64,
+        guess: Option<f64>,
+        op: SolverOperation,
+        cache: &mut Option<CurveCache<CurveHandle>>,
     ) -> Result<DroppedPoint> {
         // init output
         let mut out = DroppedPoint::default();
@@ -600,7 +669,7 @@ impl Curve {
                 handle: Some(CurveHandle(self.natural_interval())),
                 ..GlobalPointSolveOptions::default()
             };
-            let solutions = self.global_point_solve(
+            let solutions = self.global_point_solve_cached(
                 k,
                 interval,
                 op,
@@ -608,6 +677,7 @@ impl Curve {
                 dist_tol,
                 SolutionRequested::Single,
                 &opts,
+                cache,
             )?;
 
             // for every solution
@@ -1265,6 +1335,10 @@ impl Curve {
         snap_to_ends: bool,
         objects: [Option<O>; 2],
     ) -> Result<Coincidence<O>> {
+        // the two curves' caches for the end point drops, built at the first global
+        // solve and kept for the whole split recursion (upstream keeps them on the
+        // curves, which do not change here)
+        let mut caches = [None, None];
         self.global_coincidence_checker_at(
             k,
             interval,
@@ -1274,6 +1348,7 @@ impl Curve {
             snap_to_ends,
             objects,
             0,
+            &mut caches,
         )
     }
 
@@ -1288,6 +1363,7 @@ impl Curve {
         snap_to_ends: bool,
         objects: [Option<O>; 2],
         depth: usize,
+        caches: &mut [Option<CurveCache<CurveHandle>>; 2],
     ) -> Result<Coincidence<O>> {
         if depth > MAX_COINCIDENCE_DEPTH {
             return Err(SolidError::invalid_input(
@@ -1347,6 +1423,7 @@ impl Curve {
                         true,
                         objects,
                         depth + 1,
+                        caches,
                     )?
                     .solutions,
                 );
@@ -1369,6 +1446,7 @@ impl Curve {
                         true,
                         objects,
                         depth + 1,
+                        caches,
                     )?
                     .solutions,
                 );
@@ -1433,7 +1511,8 @@ impl Curve {
         let snap = |v: Vec3| snap_to_ends.then_some(v);
 
         // drop thisCurve StartPoint onto otherCurve snapping to sLinePt1[0]
-        let d = other.drop_point(
+        let [this_cache, other_cache] = caches;
+        let d = other.drop_point_cached(
             k,
             other_interval,
             line_pt1_0,
@@ -1441,13 +1520,14 @@ impl Curve {
             tol,
             None,
             solver_op,
+            other_cache,
         )?;
         if d.success && d.distance < tol {
             drops.push((interval.min(), d.parameter, d.distance));
         }
 
         // drop otherCurve startPoint onto thisCurve
-        let d = self.drop_point(
+        let d = self.drop_point_cached(
             k,
             interval,
             line_pt2_0,
@@ -1455,13 +1535,23 @@ impl Curve {
             tol,
             None,
             solver_op,
+            this_cache,
         )?;
         if d.success && d.distance < tol {
             drops.push((d.parameter, other_interval.min(), d.distance));
         }
 
         // drop otherCurve EndPoint onto thisCurve
-        let d = self.drop_point(k, interval, end2_0, snap(end2_1), tol, None, solver_op)?;
+        let d = self.drop_point_cached(
+            k,
+            interval,
+            end2_0,
+            snap(end2_1),
+            tol,
+            None,
+            solver_op,
+            this_cache,
+        )?;
         if d.success && d.distance < tol {
             let entry = (d.parameter, other_interval.max(), d.distance);
             match drops.last() {
@@ -1480,7 +1570,7 @@ impl Curve {
         }
 
         // drop thisCurve EndPoint onto otherCurve
-        let d = other.drop_point(
+        let d = other.drop_point_cached(
             k,
             other_interval,
             end1_0,
@@ -1488,6 +1578,7 @@ impl Curve {
             tol,
             None,
             solver_op,
+            other_cache,
         )?;
         if d.success && d.distance < tol {
             drops.push((interval.max(), d.parameter, d.distance));
@@ -1863,6 +1954,130 @@ fn split_in_three(interval: &Extent1d) -> [Extent1d; 3] {
 mod tests {
     use super::*;
     use crate::curve::hermite_curve::HermiteCurve;
+
+    /// A full circle of radius 2 in the XY plane (rational quadratic B-spline).
+    fn circle_of_radius_two(start_deg: f64, end_deg: f64) -> Curve {
+        use crate::geom::axis2_placement::Axis2Placement;
+        use crate::nurbs::b_spline_curve::NurbCircleParam;
+        Curve::from(
+            BSplineCurve::create_circle_segment(
+                3,
+                &Axis2Placement::IDENTITY,
+                2.0,
+                start_deg,
+                end_deg,
+                NurbCircleParam::Quadratic,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The reuse path itself (PR #224): an end point drop answered from a cache slot an
+    /// earlier drop filled gives exactly the result of a fresh slot for that drop alone
+    /// (no reuse at all), and lands where it should. Points on and just off the circle
+    /// at 48 angles, so the global solve runs on the pre-filled slot.
+    #[test]
+    fn drop_with_prefilled_cache_slot_matches_fresh_slot_per_drop() {
+        let k = Kernel::default();
+        let full = circle_of_radius_two(0.0, 360.0);
+        let ivl = full.natural_interval();
+        let tol = 1e-6;
+        let drop_at = |p: Point3, slot: &mut Option<CurveCache<CurveHandle>>| {
+            full.drop_point_base_cached(
+                &k,
+                &ivl,
+                p,
+                None,
+                tol,
+                None,
+                SolverOperation::Intersect,
+                slot,
+            )
+            .unwrap()
+        };
+
+        let mut shared = None;
+        let _ = drop_at(Vec3::new(0.0, -2.0, 0.0), &mut shared);
+        assert!(shared.is_some());
+        for i in 0..48 {
+            let a = (f64::from(i) + 0.25) * std::f64::consts::TAU / 48.0;
+            let on = Vec3::new(2.0 * a.cos(), 2.0 * a.sin(), 0.0);
+            for r in [2.0, 2.0 + 0.5 * tol] {
+                let p = Vec3::new(r * a.cos(), r * a.sin(), 0.0);
+                let fresh = drop_at(p, &mut None);
+                let reused = drop_at(p, &mut shared);
+                // `Debug` prints every float exactly: equal strings are equal bits
+                assert_eq!(format!("{fresh:?}"), format!("{reused:?}"), "angle {a}");
+                assert!(
+                    reused.success && reused.distance < tol,
+                    "angle {a}: {reused:?}"
+                );
+                let q = full.evaluate_point(reused.parameter).unwrap();
+                assert!(q.distance(on) < tol, "angle {a}: {q:?}");
+            }
+        }
+    }
+
+    /// A closed curve is split in three (recursively) and every end drop of the check
+    /// reuses one cache slot per curve (PR #224): checking again with the slots the
+    /// first check filled gives the same result, which covers exactly the upper half of
+    /// the circle.
+    #[test]
+    fn coincidence_with_prefilled_cache_slots_finds_the_half_circle() {
+        use crate::surface::surface::p4::NoObject;
+
+        let k = Kernel::default();
+        let full = circle_of_radius_two(0.0, 360.0);
+        let half = circle_of_radius_two(0.0, 180.0);
+        let (ivl, other_ivl) = (full.natural_interval(), half.natural_interval());
+        let tol = 1e-6;
+        let objects = [None::<NoObject>, None];
+        assert!(full.is_split_needed(&ivl, tol).unwrap());
+
+        let mut caches = [None, None];
+        let mut check = || {
+            full.global_coincidence_checker_at(
+                &k,
+                &ivl,
+                &half,
+                &other_ivl,
+                tol,
+                false,
+                objects,
+                0,
+                &mut caches,
+            )
+            .unwrap()
+        };
+        let filling = check();
+        let prefilled = check();
+        assert!(caches.iter().all(Option::is_some));
+        assert_eq!(format!("{filling:?}"), format!("{prefilled:?}"));
+
+        // every solution end is a point of the upper half on both curves, and the
+        // solutions' angular spans cover [0, pi] without a gap
+        assert!(!prefilled.solutions.is_empty());
+        let mut spans = Vec::new();
+        for s in &prefilled.solutions {
+            let mut angles = [0.0; 2];
+            for (angle, e) in angles.iter_mut().zip([&s.start, &s.end]) {
+                let p = full.evaluate_point(e.param(0).unwrap()).unwrap();
+                let q = half.evaluate_point(e.param(1).unwrap()).unwrap();
+                assert!(p.distance(q) < tol, "{p:?} vs {q:?}");
+                assert!(p.y > -tol && (p.length() - 2.0).abs() < tol, "{p:?}");
+                *angle = p.y.max(0.0).atan2(p.x);
+            }
+            let [a, b] = angles;
+            spans.push((a.min(b), a.max(b)));
+        }
+        spans.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut covered = 0.0_f64;
+        for &(lo, hi) in &spans {
+            assert!(lo <= covered + tol, "gap before {lo} in {spans:?}");
+            covered = covered.max(hi);
+        }
+        assert!(covered >= std::f64::consts::PI - tol, "{spans:?}");
+    }
 
     fn quarter_line() -> Curve {
         let c = BSplineCurve::create_line_segment(

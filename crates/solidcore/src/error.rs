@@ -50,7 +50,7 @@ pub(crate) fn ignore_status<T>(r: Result<T>) -> Result<()> {
 }
 
 /// A reference to one topological entity, used as error context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EntityRef {
     /// A whole B-rep.
     Brep(BrepId),
@@ -254,6 +254,11 @@ pub const SM_ERR_NULL_POINTER: i32 = 1006;
 
 /// Upstream `SmStatus` value `SM_ERR_WARNING`, as carried by [`SolidError::Upstream`].
 pub const SM_ERR_WARNING: i32 = 1023;
+
+/// Upstream `SmStatus` value `SM_ERR_INVALID_INPUT` (`SmMessages.h`), as carried by
+/// [`SolidError::Upstream`] where a function returns it as a status that callers
+/// ignore (its usual mapping is [`SolidError::InvalidInput`]).
+pub const SM_ERR_INVALID_INPUT: i32 = 1007;
 
 fn fmt_entity(entity: Option<EntityRef>) -> String {
     entity.map_or_else(String::new, |e| format!(" at {e}"))

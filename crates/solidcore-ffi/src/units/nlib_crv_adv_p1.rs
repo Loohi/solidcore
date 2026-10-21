@@ -40,6 +40,7 @@
 //!   ranges away): `ST_curxcrr` then exits before saving the input curve and frees an
 //!   uninitialised curve (`N_FreeCrv(&curA, SP)`, see `plan/findings.md`).
 
+use crate::validate::{bad, euclid};
 use crate::{call_with_buffer, FfiError};
 
 /// Largest control point index accepted by [`eval`].
@@ -104,66 +105,15 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
+crate::reader::unit_reader!();
 
-/// Sequential reader over the input.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn num(&mut self) -> Result<f64, FfiError> {
-        let v = self
-            .input
-            .get(self.at)
-            .copied()
-            .ok_or_else(|| bad("input too short"))?;
-        self.at += 1;
-        Ok(v)
-    }
-
+impl Reader<'_> {
     fn finite(&mut self) -> Result<f64, FfiError> {
         let v = self.num()?;
         if !v.is_finite() {
             return Err(bad("non-finite parameter"));
         }
         Ok(v)
-    }
-
-    fn index(&mut self, max: usize) -> Result<usize, FfiError> {
-        let v = self.num()?;
-        if v.fract() != 0.0 || v < 0.0 || v > max as f64 {
-            return Err(bad(format!("bad index/count {v}")));
-        }
-        Ok(v as usize)
-    }
-
-    fn choice(&mut self, allowed: &[f64]) -> Result<f64, FfiError> {
-        let v = self.num()?;
-        if !allowed.contains(&v) {
-            return Err(bad(format!("bad flag {v}")));
-        }
-        Ok(v)
-    }
-
-    fn take(&mut self, k: usize) -> Result<&'a [f64], FfiError> {
-        let end = self.at.checked_add(k).ok_or_else(|| bad("overflow"))?;
-        let s = self
-            .input
-            .get(self.at..end)
-            .ok_or_else(|| bad("input too short"))?;
-        self.at = end;
-        Ok(s)
-    }
-
-    fn done(&self) -> Result<(), FfiError> {
-        if self.at != self.input.len() {
-            return Err(bad("trailing input"));
-        }
-        Ok(())
     }
 }
 
@@ -197,15 +147,6 @@ impl CurveInfo {
 fn dist([ax, ay, az]: [f64; 3], [bx, by, bz]: [f64; 3]) -> f64 {
     let (x, y, z) = (ax - bx, ay - by, az - bz);
     (x * x + y * y + z * z).sqrt()
-}
-
-fn euclid([x, y, z, w]: [f64; 4]) -> [f64; 3] {
-    let z = if z == f64::MAX { 0.0 } else { z };
-    if w == -f64::MAX {
-        [x, y, z]
-    } else {
-        [x / w, y / w, z / w]
-    }
 }
 
 /// Reads and validates a curve.
@@ -284,7 +225,7 @@ fn tangent_ok(info: &CurveInfo, start: bool) -> Result<(), FfiError> {
 }
 
 fn validate(op: Op, input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     let info = curve(&mut rd)?;
     let side = [1.0, 2.0];
     match op {

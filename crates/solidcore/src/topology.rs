@@ -6,9 +6,10 @@
 //!
 //! | Rust                        | Upstream                                              |
 //! |-----------------------------|-------------------------------------------------------|
-//! | [`Brep`]                    | `SmBrep` (face/edge/vertex lists `m_p*ListHead`, `m_bValidateOnly`) |
-//! | [`Region`] / [`RegionId`]   | `SmRegion` (minimal: its list owner)                  |
-//! | [`Shell`] / [`ShellId`]     | `SmShell`                                             |
+//! | [`Brep`]                    | `SmBrep` (face/edge/vertex lists `m_p*ListHead`, `m_bValidateOnly`; its own members in [`brep::p1`]) |
+//! | [`Region`] / [`RegionId`]   | `SmRegion` (minimal: list owner, shell list, void flag) |
+//! | [`Shell`] / [`ShellId`]     | `SmShell` (faces, region, type and list head)         |
+//! | [`Brep::new_with_infinite_region`] | `SmBrep::SmBrep()` (topology part, CO-PORTED) |
 //! | [`Faceuse`] / [`FaceuseId`] | `SmFaceuse` (unit `topology.edgeuse_p1`)              |
 //! | [`Face`] / [`FaceId`]       | `SmFace` (unit `topology.face_p2`)                    |
 //! | [`Loopuse`] / [`LoopuseId`] | `SmLoopuse` (unit `topology.loopuse`)                 |
@@ -36,6 +37,7 @@
 //! friend writes of `SmBrepConstructor`: they link records without validation (a
 //! B-rep graph is cyclic, so a record may name ids added later).
 
+pub mod brep;
 pub mod brep_cache;
 pub mod brep_data;
 pub mod database_io;
@@ -44,6 +46,7 @@ pub mod edgeuse;
 pub mod face;
 pub mod loopuse;
 pub mod proto_topology;
+pub mod shell;
 #[allow(clippy::module_inception)]
 pub mod topology;
 pub mod topology_traverser;
@@ -59,7 +62,7 @@ use crate::geom::attribute::ObjectKey;
 use crate::geom::extent1d::Extent1d;
 use crate::geom::extent2d::Extent2d;
 use crate::geom::solution_array::{ObjectKind, SolutionObject};
-use crate::geom::tol::ZONE_TOL_3D;
+use crate::geom::tol::{USE_DEFAULT, ZONE_TOL_3D};
 use crate::geom::vector2d::Point2;
 use crate::heal::gap::{EdgeEdgeGap, EdgeFaceGap, VertexEdgeGap, VertexFaceGap};
 use crate::math::{Point3, BIG_DOUBLE};
@@ -356,14 +359,22 @@ pub struct Shell {
     pub faces: Vec<FaceId>,
     /// `m_pListOwner` (CO-PORTED): the region owning the shell (`GetRegion`).
     pub region: Option<RegionId>,
+    /// Native `m_tShellType`, independent of the list head during construction.
+    pub shell_type: shell::ShellType,
+    /// Native list members in head-first circular traversal order.
+    pub members: shell::ShellMembers,
 }
 
 /// A region (`SmRegion`, CO-PORTED minimal record).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Region {
     /// `m_pListOwner != NULL`: the region is on the B-rep's region list, so
     /// `GetBrep` reaches the B-rep.
     pub in_brep: bool,
+    /// Native region shell list, in traversal order from its head.
+    pub shells: Vec<ShellId>,
+    /// Native `SmBoolean` `m_bIsVoidFlag` (0 at construction; 2 is `UNSURE`).
+    pub is_void: i32,
 }
 
 /// One use of a face (`SmFaceuse`): the face seen from one side.
@@ -380,6 +391,9 @@ pub struct Faceuse {
     pub orientation: OrientType,
     /// `m_pList`: the loop uses, outer loop use first.
     pub loopuses: Vec<LoopuseId>,
+    /// Literal sibling links when present, even if the owner has no list head.
+    /// `None` uses the owner's canonical face-use vector during construction.
+    pub sibling_links: Option<shell::FaceuseSiblingLinks>,
 }
 
 /// What a loop use starts from (`m_tLoopuseType` and `m_pEUorVU`).
@@ -524,6 +538,7 @@ pub struct Brep {
     edges: Arena<EdgeId, Edge>,
     vertices: Arena<VertexId, Vertex>,
     regions: Arena<RegionId, Region>,
+    infinite_region: Option<RegionId>,
     faceuses: Arena<FaceuseId, Faceuse>,
     loopuses: Arena<LoopuseId, Loopuse>,
     edgeuses: Arena<EdgeuseId, Edgeuse>,
@@ -534,6 +549,30 @@ pub struct Brep {
     tolerance: f64,
     /// The identity the B-rep is attributed and notified under (`SmBrep*`).
     key: ObjectKey,
+    /// `SmOwningTopology::m_pList` of the B-rep (unit `topology.brep_p1`): the head of
+    /// its circular region list, `None` for the first region record (the region arena
+    /// holds the list in traversal order; the head only rotates it).
+    region_list_head: Option<RegionId>,
+    /// `m_pFaceListHead` (unit `topology.brep_p1`): the face list in its list order
+    /// (every face record, once; an importer may reorder it). Upstream appends on
+    /// `PostInsert` and unlinks on `Remove`: a record deletion (`DeleteFace` /
+    /// `DeleteEdge` / `DeleteVertex`, not ported yet) must remove the id from this
+    /// list and its siblings below, as `add_*_record` appends it.
+    face_list: Vec<FaceId>,
+    /// `m_pEdgeListHead` (unit `topology.brep_p1`): the edge list in its list order.
+    edge_list: Vec<EdgeId>,
+    /// `m_pVertexListHead` (unit `topology.brep_p1`): the vertex list in its list order.
+    vertex_list: Vec<VertexId>,
+    /// `m_bEditingEnabled` (unit `topology.brep_p1`): the B-rep is being edited, so
+    /// trimmed-surface caches skip the trimmed face data.
+    editing_enabled: bool,
+    /// `m_dThisModelSizeEstimate` (unit `topology.brep_p1`).
+    model_size_estimate: f64,
+    /// `m_dThisLargeSmallSizeRatio` (unit `topology.brep_p1`).
+    large_small_size_ratio: f64,
+    /// `m_pDeletedSurfaces` (unit `topology.brep_p1`): surfaces removed from the B-rep
+    /// that are kept until the operation ends because they may still be referenced.
+    deleted_surfaces: Vec<Surface>,
 }
 
 impl Default for Brep {
@@ -545,6 +584,7 @@ impl Default for Brep {
             edges: Arena::default(),
             vertices: Arena::default(),
             regions: Arena::default(),
+            infinite_region: None,
             faceuses: Arena::default(),
             loopuses: Arena::default(),
             edgeuses: Arena::default(),
@@ -552,6 +592,14 @@ impl Default for Brep {
             validate_only: false,
             tolerance: ZONE_TOL_3D,
             key: ObjectKey(0),
+            region_list_head: None,
+            face_list: Vec::new(),
+            edge_list: Vec::new(),
+            vertex_list: Vec::new(),
+            editing_enabled: false,
+            model_size_estimate: USE_DEFAULT,
+            large_small_size_ratio: USE_DEFAULT,
+            deleted_surfaces: Vec::new(),
         }
     }
 }
@@ -568,6 +616,51 @@ impl Brep {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// `SmBrep()` (CO-PORTED by `topology.brep_p10` from unit `topology.brep_p3`, the
+    /// topology part only): an empty B-rep whose region list holds the infinite region,
+    /// a void region (`SetIsVoid(TRUE)`); editing disabled, tolerance
+    /// [`ZONE_TOL_3D`].
+    ///
+    /// # Errors
+    ///
+    /// None in practice (the region arena is empty).
+    pub fn new_with_infinite_region() -> Result<Self> {
+        let mut b = Self::default();
+        // Create infinite region and put into brep's region list
+        let r = b.regions.insert(Region {
+            in_brep: true,
+            shells: Vec::new(),
+            is_void: 1,
+        })?;
+        b.infinite_region = Some(r);
+        // PreInsert: the infinite region heads the region list
+        b.region_list_head = Some(r);
+        Ok(b)
+    }
+
+    /// `m_pInfiniteRegion` (`GetInfiniteRegion`).
+    #[must_use]
+    pub const fn infinite_region(&self) -> Option<RegionId> {
+        self.infinite_region
+    }
+
+    /// Friend write of the B-rep's infinite-region identity. Like other record
+    /// writes, this permits references to records added later.
+    pub fn set_infinite_region_record(&mut self, region: Option<RegionId>) {
+        self.infinite_region = region;
+    }
+
+    /// `m_bEditingEnabled`.
+    #[must_use]
+    pub const fn editing_enabled(&self) -> bool {
+        self.editing_enabled
+    }
+
+    /// Sets `m_bEditingEnabled`.
+    pub fn set_editing_enabled(&mut self, enabled: bool) {
+        self.editing_enabled = enabled;
     }
 
     /// All shells.
@@ -817,9 +910,11 @@ impl Brep {
     }
 
     /// Appends a face record as is (no validation; the shell's face list is not
-    /// touched).
+    /// touched); the face joins the end of the B-rep's face list.
     pub fn add_face_record(&mut self, face: Face) -> Result<FaceId> {
-        self.faces.insert(face)
+        let id = self.faces.insert(face)?;
+        self.face_list.push(id);
+        Ok(id)
     }
 
     /// Appends a loop record as is (no validation; the face's loop list is not
@@ -828,14 +923,20 @@ impl Brep {
         self.loops.insert(loop_)
     }
 
-    /// Appends an edge record as is (no validation).
+    /// Appends an edge record as is (no validation); the edge joins the end of the
+    /// B-rep's edge list.
     pub fn add_edge_record(&mut self, edge: Edge) -> Result<EdgeId> {
-        self.edges.insert(edge)
+        let id = self.edges.insert(edge)?;
+        self.edge_list.push(id);
+        Ok(id)
     }
 
-    /// Appends a vertex record as is.
+    /// Appends a vertex record as is; the vertex joins the end of the B-rep's vertex
+    /// list.
     pub fn add_vertex_record(&mut self, vertex: Vertex) -> Result<VertexId> {
-        self.vertices.insert(vertex)
+        let id = self.vertices.insert(vertex)?;
+        self.vertex_list.push(id);
+        Ok(id)
     }
 
     /// Appends a face use record as is (no validation).
@@ -865,7 +966,7 @@ impl Brep {
 
     /// Adds a vertex at `point`.
     pub fn add_vertex(&mut self, point: Point3) -> Result<VertexId> {
-        self.vertices.insert(Vertex {
+        self.add_vertex_record(Vertex {
             point,
             tolerance: ZONE_TOL_3D,
             ..Vertex::default()
@@ -880,7 +981,7 @@ impl Brep {
                 return Err(not_found(OP, v));
             }
         }
-        self.edges.insert(Edge {
+        self.add_edge_record(Edge {
             vertices: [start, end],
             edgeuses: Vec::new(),
             interval: Extent1d::new(),
@@ -895,7 +996,7 @@ impl Brep {
         if self.shells.get(shell).is_none() {
             return Err(not_found(OP, shell));
         }
-        let face = self.faces.insert(Face::new(shell))?;
+        let face = self.add_face_record(Face::new(shell))?;
         self.shells
             .get_mut(shell)
             .ok_or_else(|| not_found(OP, shell))?

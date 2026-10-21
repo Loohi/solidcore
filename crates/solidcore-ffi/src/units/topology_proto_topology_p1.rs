@@ -45,6 +45,7 @@
 //! [`run`] accepts only well-formed scripts with bounded finite data (counts, codes, curve
 //! and surface blocks); the run-time state checks are the shim's.
 
+use crate::validate::{bad, NOW};
 use crate::{call_with_buffer, FfiError};
 
 mod sys {
@@ -425,17 +426,7 @@ const MAX_ID: f64 = 1.0e6;
 const MAX_DEGREE: i64 = 9;
 const MAX_POINTS: i64 = 64;
 const MAX_LIST: i64 = 16;
-/// NLib's non-rational weight marker `NL_NOW`.
-const NOW: f64 = -f64::MAX;
-
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
-
-fn bad(what: &str) -> FfiError {
-    FfiError::InvalidArgument(what.into())
-}
+crate::reader::unit_reader!();
 
 impl Reader<'_> {
     fn num(&mut self) -> Result<f64, FfiError> {
@@ -882,7 +873,7 @@ fn validate_transform(rd: &mut Reader<'_>) -> Result<(), FfiError> {
 ///
 /// [`FfiError::InvalidArgument`] for a malformed script.
 pub fn validate(input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     match rd.int(0, kind::TRANSFORM)? {
         kind::LIST => validate_list(&mut rd)?,
         kind::PROTO => validate_proto(&mut rd)?,

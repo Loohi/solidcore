@@ -33,6 +33,7 @@
 //! no `BBox` asking for the pseudo box alone of an unbounded box (upstream writes the
 //! missing box through a null pointer), and byte values for `ReadDb`.
 
+use crate::validate::bad;
 use crate::{call_with_buffer, FfiError};
 
 /// Largest derivative order the shim's evaluation arrays hold.
@@ -94,15 +95,7 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
-
-/// Sequential reader over the input, mirroring the shim's reads.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
+crate::reader::unit_reader!(MAX_COORD);
 
 impl Reader<'_> {
     fn num(&mut self) -> Result<f64, FfiError> {
@@ -153,7 +146,7 @@ impl Reader<'_> {
 ///
 /// [`FfiError::InvalidArgument`] naming the first problem.
 pub fn validate(op: Op, input: &[f64]) -> Result<(), FfiError> {
-    let mut r = Reader { input, at: 0 };
+    let mut r = Reader::new(input);
     if op != Op::ReadDb {
         r.twist()?;
     }

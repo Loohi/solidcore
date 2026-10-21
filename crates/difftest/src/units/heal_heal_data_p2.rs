@@ -22,7 +22,8 @@
 //!   vertex's vertex use order from the shim.
 //!
 //! Deferred: `Fix_TolSizes` (`SmBrep::GetThisModelSizeEstimate`, `topology.brep_p1`),
-//! `Cache_DegenFaces` with a face (`SmFace::IsDegenerate`, `topology.face_p3`), and the
+//! `Cache_DegenFaces` with a face (`SmFace::IsDegenerate` classifies its edges with
+//! `SmCurveClassification`, `intersect.curve_class_p4`), and the
 //! gap computations whose surface drops are not ported yet.
 
 use serde::{Deserialize, Serialize};
@@ -43,7 +44,9 @@ use solidcore::heal::heal_data::p2::{
 use solidcore::intersect::point_class::{ClassObject, ClassObjectKind};
 use solidcore::kernel::Kernel;
 use solidcore::topology::topology_traverser::Marks;
-use solidcore::topology::{Brep, EdgeId, EdgeuseId, FaceId, LoopId, VertexId, VertexuseId};
+use solidcore::topology::{
+    Brep, EdgeId, EdgeuseId, FaceId, LoopId, RegionId, VertexId, VertexuseId,
+};
 use solidcore::{EntityRef, SolidError};
 use solidcore_ffi::units::heal_heal_data_p2 as ffi;
 use solidcore_ffi::units::topology_vertexuse::counts;
@@ -59,18 +62,89 @@ pub const MIN_GENERATED: usize = 600;
 /// The difftest runner.
 pub struct Runner;
 
+/// The classification handles: loops, and the face, surface, topology and curves of
+/// `SmFace::ClassifyLoops`' loop bisector (reached through `SetProps_Stage3`).
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct H(LoopId);
+enum H {
+    Topo(EntityRef),
+    Surface(FaceId),
+    Curve(bool),
+    EdgeCurve(EdgeId),
+    Trim(EdgeuseId),
+}
 
 impl ClassObject for H {
     fn class_kind(&self) -> ClassObjectKind {
-        ClassObjectKind::Loop
+        match self {
+            Self::Topo(e) => e.class_kind(),
+            Self::Surface(_) => ClassObjectKind::Surface,
+            Self::Curve(_) | Self::EdgeCurve(_) | Self::Trim(_) => ClassObjectKind::Curve,
+        }
     }
 }
 
 impl LoopObject for H {
     fn from_loop(l: LoopId) -> Self {
-        Self(l)
+        Self::Topo(EntityRef::Loop(l))
+    }
+
+    fn as_loop(&self) -> Option<LoopId> {
+        match self {
+            Self::Topo(e) => e.as_loop(),
+            _ => None,
+        }
+    }
+
+    fn as_vertex(&self) -> Option<VertexId> {
+        match self {
+            Self::Topo(e) => e.as_vertex(),
+            _ => None,
+        }
+    }
+
+    fn from_face(f: FaceId) -> Option<Self> {
+        Some(Self::Topo(EntityRef::Face(f)))
+    }
+
+    fn from_face_surface(f: FaceId) -> Option<Self> {
+        Some(Self::Surface(f))
+    }
+
+    fn from_classify_curve(uv: bool) -> Option<Self> {
+        Some(Self::Curve(uv))
+    }
+
+    fn from_topology(t: EntityRef) -> Option<Self> {
+        Some(Self::Topo(t))
+    }
+
+    fn as_topology(&self) -> Option<EntityRef> {
+        match self {
+            Self::Topo(t) => Some(*t),
+            _ => None,
+        }
+    }
+
+    fn from_edge_curve(e: EdgeId) -> Option<Self> {
+        Some(Self::EdgeCurve(e))
+    }
+
+    fn as_edge_curve(&self) -> Option<EdgeId> {
+        match self {
+            Self::EdgeCurve(e) => Some(*e),
+            _ => None,
+        }
+    }
+
+    fn from_trim_curve(eu: EdgeuseId) -> Option<Self> {
+        Some(Self::Trim(eu))
+    }
+
+    fn as_trim_curve(&self) -> Option<EdgeuseId> {
+        match self {
+            Self::Trim(eu) => Some(*eu),
+            _ => None,
+        }
     }
 }
 
@@ -562,6 +636,8 @@ fn op_of(c: i64) -> HealerOpType {
 
 #[allow(clippy::too_many_lines)]
 fn rust_prob(kind: u8, n: u64, ops: &[[i64; 4]]) -> Result<Output, HarnessError> {
+    // Run only on scripts the C++ guard accepts: `n` sizes the object list below.
+    ffi::check_prob(&prob_input(kind, n, ops)).map_err(|e| harness(format!("prob script: {e}")))?;
     let mut arena: PropsArena<FacePropsId, FacePropsEntry<H>> = PropsArena::default();
     let ids: Vec<FacePropsId> = (0..n).map(|_| arena.alloc(FacePropsEntry::new())).collect();
     let id = |a: i64| -> Result<FacePropsId, HarnessError> {
@@ -1111,6 +1187,12 @@ fn restore(b: &mut Brep, extra: &[f64], c: [usize; 10]) -> Result<(), HarnessErr
         r.vertex_edge_gap = eg;
         r.vertex_face_gap = fg;
     }
+    // the infinite region (`SmBrep::m_pInfiniteRegion`; `Fix_InfiniteRegion` walks the
+    // region list from it)
+    let inf = next()?;
+    if inf >= 0.0 {
+        b.set_infinite_region(Some(RegionId::from_index(inf as u32)));
+    }
     if at != extra.len() {
         return Err(harness("extras: trailing data"));
     }
@@ -1165,6 +1247,9 @@ fn rust_heal(
         // the B-rep could not be built: the shim reports the same `-1 status`
         return Ok(Output::new().values("out", ex));
     };
+    // Run only on scripts the C++ guard accepts: the voxel counts size the voxel model.
+    ffi::check_heal(&args_of(targets, voxels, steps, n))
+        .map_err(|e| harness(format!("heal script: {e}")))?;
     let c = counts(&ex).ok_or_else(|| harness("export counts"))?;
     let (mut b, exact) = import(&ex)?;
     if exact.iter().any(|x| !x) {
@@ -1260,12 +1345,12 @@ fn rust_heal(
                 h.cache_face_props_gaps(&k, &mut b, HealerOpType::CacheFacepropsGaps)
             }
             Step::FixTolSizes => h
-                .fix_tol_sizes(&k, &mut b, HealerOpType::FixTolsizes)
+                .fix_tol_sizes(&mut k, &mut b, HealerOpType::FixTolsizes)
                 .map(|()| false),
             Step::CacheCoinVertices => {
                 h.cache_coin_vertices(&k, &b, HealerOpType::CacheCoinVertices)
             }
-            Step::CacheDegenFaces => h.cache_degen_faces(&k, &b, HealerOpType::CacheDegenFaces),
+            Step::CacheDegenFaces => h.cache_degen_faces(&k, &mut b, HealerOpType::CacheDegenFaces),
             Step::CacheCoinEdges => Ok(h.cache_coin_edges(HealerOpType::CacheCoinEdges)),
             Step::FixCoinEdges => h.fix_coin_edges(HealerOpType::FixCoinEdges).map(|()| false),
             Step::CacheMissedEdgeXsects => {
@@ -1416,10 +1501,14 @@ fn rust_heal(
             Step::FixBadSheets => {
                 let mut lock = MarkLock::new(std::slice::from_mut(&mut k.context), 0, ALL_MARKS)
                     .map_err(|e| harness(format!("mark lock: {e}")))?;
+                // harness env: the runner holds no attribute state (default region
+                // records, empty store; see RegionNotifyState)
+                let mut state = solidcore::topology::brep::p2::RegionNotifyState::new(&b);
                 let r = h.fix_bad_sheets(
                     &mut k,
                     &mut b,
                     &mut marks,
+                    &mut state.env(),
                     &lock,
                     HealerOpType::FixBadsheets,
                 );
@@ -1910,5 +1999,41 @@ impl UnitDiff for Runner {
 
     fn run_rust(&self, case: &Case) -> Result<Output, HarnessError> {
         run_rust(&case.parse()?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Object counts the C++ guard refuses are a harness error on the Rust side too,
+    /// not a capacity-overflow panic or a 32 GiB object list (issue #181).
+    #[test]
+    fn prob_refuses_unguarded_object_counts() {
+        for n in [
+            0,
+            ffi::MAX_OBJECTS as u64 + 1,
+            1 << 31,
+            1 << 32,
+            i64::MAX as u64,
+            u64::MAX,
+        ] {
+            let i = Inputs::Prob {
+                kind: 1,
+                n,
+                ops: Vec::new(),
+            };
+            assert!(run_rust(&i).is_err(), "n = {n}");
+        }
+    }
+
+    /// Generated problem array scripts pass the guard and still run.
+    #[test]
+    fn prob_runs_generated_scripts() {
+        let mut rng = Rng::new(7);
+        for _ in 0..200 {
+            let i = gen_prob(&mut rng);
+            assert!(run_rust(&i).is_ok(), "{i:?}");
+        }
     }
 }

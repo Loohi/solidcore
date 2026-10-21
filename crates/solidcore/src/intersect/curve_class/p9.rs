@@ -317,7 +317,13 @@ impl<O: ClassObject> CurveClassification<O> {
             }
             return Ok(());
         }
-        let cache = make_curve_cache::<Side>(k, source, Some(Side::Source))?;
+        // `GetOrCreateObjectCache(SM_OC_CURVE, ..)` then `NER(pCC)`: a failed cache
+        // build (e.g. a degenerate source) is a NULL cache, SM_ERR_NULL_POINTER.
+        let cache = match make_curve_cache::<Side>(k, source, Some(Side::Source)) {
+            Ok(c) => c,
+            Err(e) if e.is_unported() => return Err(e),
+            Err(_) => return Err(SolidError::null_pointer(OP)),
+        };
         let tree = cache.tree().ok_or(SolidError::null_pointer(OP))?;
         let top = tree.top_node().ok_or(SolidError::null_pointer(OP))?;
         let mut domain = Extent2d::from_extent3d(&tree.node(top)?.bbox);
@@ -442,7 +448,10 @@ impl<O: ClassObject> CurveClassification<O> {
             if !cached {
                 return SolidError::null_pointer(OP);
             }
-            // UNPORTED(topology.edgeuse_p3): SmEdgeuse::GetOrCreateUVTrimCurve
+            // UNPORTED(topology.edgeuse_p3): SmEdgeuse::GetOrCreateUVTrimCurve (justified: findings.md topology.edgeuse_p3)
+            // the boundary views are read-only `ClassGeometry` handles built from a
+            // borrowed `&Brep` (`query::face::p2::curve_on_classify`), so a trim curve
+            // created here could be neither stored nor resolved
             SolidError::unported("SmEdgeuse::GetOrCreateUVTrimCurve", "topology.edgeuse_p3")
         })?;
         let trim = curve(geometry, trim_handle)?;
@@ -604,13 +613,16 @@ mod tests {
         let error = cc
             .intersect_edges(&k, &geometry, &[edge], &surface, options)
             .unwrap_err();
-        assert!(matches!(
-            error,
-            SolidError::Unported {
-                unit: "intersect.curve_class_p2",
-                ..
-            }
-        ));
+        assert!(
+            matches!(
+                error,
+                SolidError::Unported {
+                    upstream: "SmEdge::GetCurve",
+                    unit: "topology.edge",
+                }
+            ),
+            "{error:?}"
+        );
         assert_eq!(cc.intervals(), original);
     }
     #[test]

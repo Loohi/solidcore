@@ -74,10 +74,8 @@
 //!   (UB-120) cannot be passed.
 //! - **`CheckLoop`** takes the surface separately, as upstream; `CheckFace` passes a
 //!   copy of the face's surface (the edge use UV extremes need the B-rep mutably).
-//! - **Unported callees** return [`SolidError::Unported`]: `SmBrep::SetTolerance`
-//!   (`topology.brep_p2`), `SmBrep::MakeFaceWithCurves` (`topology.brep_p7`),
-//!   `SmBrep::MakeFacesWithCurves` (`topology.brep_p8`), `SmFace::CreateUVTrimCurves`
-//!   and `SmFace::ComputeLoopOrientation` (`topology.face_p3`),
+//! - **Unported callees** return [`SolidError::Unported`]: `SmBrep::MakeFaceWithCurves` (`topology.brep_p7`),
+//!   `SmBrep::MakeFacesWithCurves` (`topology.brep_p8`),
 //!   `SmFace::FlipFaceOrientation` and `SmFace::SplitAtSeam` (`topology.face_p1`),
 //!   `SmFace::GetEdges` and `SmFace::HasSeamProblem` (`topology.face_p4`).
 //! - The other members of the class (`FindLoopCurveOrientations`,
@@ -239,23 +237,57 @@ fn report(
 
 // ---- unported callees -------------------------------------------------------------------
 
-/// `SmBrep::SetTolerance` (unit `topology.brep_p2`).
-fn brep_set_tolerance(_b: &mut Brep, _tol: f64) -> Result<()> {
-    // UNPORTED(topology.brep_p2): SmBrep::SetTolerance
-    Err(SolidError::unported(
-        "SmBrep::SetTolerance",
-        "topology.brep_p2",
-    ))
+/// `SmBrep::SetTolerance(d3DTolerance)` (the double becomes an `SmZoneTol3d`; default
+/// arguments).
+fn brep_set_tolerance(k: &Kernel, b: &mut Brep, tol: f64) -> Result<()> {
+    crate::topology::brep::p2::set_tolerance(k, b, tol::zone_tol3d(k, tol), true, true)
 }
 
 /// `SmBrep::MakeFaceWithCurves(region, loops, 3d curves, NULL, ...)` (unit
-/// `topology.brep_p7`).
-fn make_face_with_curves(_b: &mut Brep, _input: TrimInput) -> Result<FaceId> {
-    // UNPORTED(topology.brep_p7): SmBrep::MakeFaceWithCurves
-    Err(SolidError::unported(
-        "SmBrep::MakeFaceWithCurves",
-        "topology.brep_p7",
-    ))
+/// `topology.brep_p7`). The new face owns the surface under the face identity
+/// `(SmFace_TYPE, 1 + index)`.
+fn make_face_with_curves(
+    k: &Kernel,
+    b: &mut Brep,
+    region: RegionId,
+    input: TrimInput,
+    env: &mut crate::topology::edge::NotifyEnv<'_>,
+) -> Result<FaceId> {
+    let TrimInput {
+        loop_counts,
+        curves,
+        orientations,
+        loop_points,
+        surface,
+        uv_domain,
+        surface_orientation,
+    } = input;
+    let curves_input = crate::topology::brep::p7::FaceCurvesInput {
+        loops: loop_counts,
+        curves_3d: Some(curves.into_iter().map(Some).collect()),
+        uv_curves: None,
+        orientations,
+        loop_points,
+    };
+    let face_ref = |f: FaceId| crate::geom::object::ObjectRef {
+        type_code: fp2::TYPE,
+        key: crate::geom::attribute::ObjectKey(1 + u64::from(f.index())),
+    };
+    let made = crate::topology::brep::p7::make_face_with_curves(
+        k,
+        b,
+        Some(region),
+        curves_input,
+        surface,
+        &uv_domain,
+        surface_orientation,
+        None,
+        &face_ref,
+        env,
+    )?;
+    // (upstream adds the new face pointer as is)
+    made.face
+        .ok_or_else(|| SolidError::invalid_input(OP, "MakeFaceWithCurves made no face"))
 }
 
 /// `SmBrep::MakeFacesWithCurves(region, loops, 3d curves, NULL, ...)` (unit
@@ -268,27 +300,20 @@ fn make_faces_with_curves(_b: &mut Brep, _input: TrimInput) -> Result<Vec<FaceId
     ))
 }
 
-/// `SmFace::CreateUVTrimCurves(FALSE, NULL, NULL, ...)` (unit `topology.face_p3`).
-fn face_create_uv_trim_curves(_k: &Kernel, _b: &mut Brep, _f: FaceId) -> Result<()> {
-    // UNPORTED(topology.face_p3): SmFace::CreateUVTrimCurves
-    Err(SolidError::unported(
-        "SmFace::CreateUVTrimCurves",
-        "topology.face_p3",
-    ))
+/// `SmFace::CreateUVTrimCurves(FALSE, NULL, NULL, ...)`.
+fn face_create_uv_trim_curves(k: &Kernel, b: &mut Brep, f: FaceId) -> Result<()> {
+    crate::topology::face::p3::create_uv_trim_curves(k, b, f, false, None).map(|_| ())
 }
 
-/// `SmFace::ComputeLoopOrientation(loop, orientation)` (unit `topology.face_p3`).
+/// `SmFace::ComputeLoopOrientation(loop, orientation)` (default arguments: no UV
+/// bounds, `bDo3DLoopComputation = FALSE`).
 fn face_compute_loop_orientation(
-    _k: &Kernel,
-    _b: &Brep,
-    _f: FaceId,
-    _l: LoopId,
+    k: &Kernel,
+    b: &mut Brep,
+    f: FaceId,
+    l: LoopId,
 ) -> Result<OrientType> {
-    // UNPORTED(topology.face_p3): SmFace::ComputeLoopOrientation
-    Err(SolidError::unported(
-        "SmFace::ComputeLoopOrientation",
-        "topology.face_p3",
-    ))
+    crate::topology::face::p3::compute_loop_orientation(k, b, f, l, None, false)
 }
 
 /// `SmFace::FlipFaceOrientation` (unit `topology.face_p1`).
@@ -329,6 +354,39 @@ impl crate::heal::face_props::LoopObject for SeamObject {
     fn from_loop(l: LoopId) -> Self {
         Self::Loop(l)
     }
+
+    fn as_loop(&self) -> Option<LoopId> {
+        match self {
+            Self::Loop(l) => Some(*l),
+            Self::Vertex(_) => None,
+        }
+    }
+
+    fn as_vertex(&self) -> Option<crate::topology::VertexId> {
+        match self {
+            Self::Vertex(v) => Some(*v),
+            Self::Loop(_) => None,
+        }
+    }
+}
+
+/// Classification geometry for [`SeamObject`]s: loops and vertices name no curve,
+/// surface, volume or point here (their zone tolerances come from the topology).
+struct SeamGeometry;
+
+impl crate::intersect::point_class::ClassGeometry<SeamObject> for SeamGeometry {
+    fn curve(&self, _: SeamObject) -> Option<&Curve> {
+        None
+    }
+    fn surface(&self, _: SeamObject) -> Option<&Surface> {
+        None
+    }
+    fn volume(&self, _: SeamObject) -> Option<&crate::surface::volume::Volume> {
+        None
+    }
+    fn point(&self, _: SeamObject) -> Option<Point3> {
+        None
+    }
 }
 
 /// `SmFace::HasSeamProblem(rCrvClassU, rCrvClassV, eCrossed, eMissing, eNearMiss)` (unit
@@ -365,6 +423,7 @@ fn face_split_at_seam_problem(k: &Kernel, b: &mut Brep, f: FaceId) -> Result<Vec
         &mut cv,
         problem,
         None,
+        &SeamGeometry,
         &|o: SeamObject| match o {
             SeamObject::Vertex(v) => Some(EntityRef::Vertex(v)),
             SeamObject::Loop(_) => None,
@@ -417,6 +476,7 @@ pub fn trim_surface_with_model_space_curves(
     first_is_outer: bool,
     oriented_correctly: bool,
     may_cross_seam: bool,
+    env: &mut crate::topology::edge::NotifyEnv<'_>,
 ) -> Result<Vec<FaceId>> {
     // NER(pRegion); pBrep = pRegion->GetBrep(); NER(pBrep)
     let region = region.ok_or(SolidError::null_pointer(OP))?;
@@ -426,7 +486,7 @@ pub fn trim_surface_with_model_space_curves(
     let _ = first_is_outer; // SM_ASSERT only
 
     // set Brep tolerance
-    brep_set_tolerance(b, tol_3d)?;
+    brep_set_tolerance(k, b, tol_3d)?;
 
     // remember if Surface is G1 continuous
     let g1_surface = surface_continuity_check(k, &input.surface)?;
@@ -438,7 +498,7 @@ pub fn trim_surface_with_model_space_curves(
 
     let mut new_faces = if g1_surface {
         // when Surface is G1Continuous - just call MakeFaceWithCurves()
-        vec![make_face_with_curves(b, input)?]
+        vec![make_face_with_curves(k, b, region, input, env)?]
     } else {
         // MakeFacesWithCurves, then clear the UV trim curves of the new faces
         let faces = make_faces_with_curves(b, input)?;
@@ -517,7 +577,8 @@ pub fn face_uv_curves_present(b: &Brep, f: FaceId) -> Result<bool> {
 ///
 /// # Errors
 ///
-/// [`SolidError::Unported`] (`topology.face_p3`).
+/// Those of [`crate::topology::face::p3::create_uv_trim_curves`] ([`SolidError::Unported`]
+/// at `SmFace::GetUpwardLoopuses`, `topology.face_p4`).
 pub fn create_uv_trim_curves(k: &Kernel, b: &mut Brep, f: FaceId) -> Result<()> {
     face_create_uv_trim_curves(k, b, f)
 }
@@ -983,8 +1044,8 @@ pub fn fix_backwards_outer_loop_on_seam(k: &Kernel, b: &mut Brep, f: FaceId) -> 
 ///
 /// # Errors
 ///
-/// [`SolidError::Unported`] (`SmFace::ComputeLoopOrientation`, `topology.face_p3`;
-/// `SmFace::FlipFaceOrientation`, `topology.face_p1`); those of
+/// [`SolidError::Unported`] (`SmFace::FlipFaceOrientation`, `topology.face_p1`); those
+/// of `SmFace::ComputeLoopOrientation` and
 /// [`lu1::flip_loop_orientation`].
 pub fn fix_loop_orientation(
     k: &Kernel,
@@ -1073,8 +1134,8 @@ fn move_loopuse_first(
 ///
 /// `SM_ERR` for a face without loops; [`SolidError::InvalidInput`] for an edge without
 /// UV trim curve on the face's surface (upstream dereferences it); `SM_ERR_NULL_POINTER`
-/// for a loop use without face use; [`SolidError::Unported`]
-/// (`SmFace::ComputeLoopOrientation`, `topology.face_p3`); those of the callees.
+/// for a loop use without face use; those of the callees
+/// (`SmFace::ComputeLoopOrientation`, `topology.face_p3`).
 pub fn fix_trim_loop_order(k: &Kernel, b: &mut Brep, f: FaceId) -> Result<bool> {
     let mut loops_reordered = false;
 
@@ -1093,7 +1154,7 @@ pub fn fix_trim_loop_order(k: &Kernel, b: &mut Brep, f: FaceId) -> Result<bool> 
         let mut uv_box = Extent3d::new();
         for (jj, e) in lu1::loop_edges(b, l)?.into_iter().enumerate() {
             let e = e.ok_or_else(|| null("loop edge use without edge"))?;
-            let holder = crate::topology::edge::uv_trim_curve_of_surface(b, e, Some(f))?
+            let holder = crate::topology::edge::uv_trim_curve_of_surface(k, b, e, Some(f))?
                 .ok_or_else(|| null("edge without UV trim curve on the face's surface"))?;
             let crv = eu1::uv_trim_curve(b, holder)?
                 .0
@@ -1705,8 +1766,8 @@ pub fn find_outer_loops(
 /// # Errors
 ///
 /// `SM_ERR` as described; [`SolidError::InvalidInput`] for a face without surface (with
-/// a loop to check); [`SolidError::Unported`] (`SmFace::ComputeLoopOrientation`,
-/// `topology.face_p3`); those of [`check_loop`].
+/// a loop to check); those of `SmFace::ComputeLoopOrientation` (`topology.face_p3`) and
+/// [`check_loop`].
 pub fn check_face(
     k: &Kernel,
     b: &mut Brep,
@@ -1852,9 +1913,11 @@ pub fn is_loop_uv_gap_within_tolerance(
             Err(_) => return Ok(false),
         },
         SurfaceKind::SurfOfRevolution(s) => Cow::Borrowed(s.base()),
-        SurfaceKind::CurveBounded(_) | SurfaceKind::Step(_) | SurfaceKind::SrfInVolume(_) => {
-            return Ok(false)
-        }
+        // (dynamic_cast<const SmBSplineSurface*> fails: FALSE)
+        SurfaceKind::CurveBounded(_)
+        | SurfaceKind::Step(_)
+        | SurfaceKind::SrfInVolume(_)
+        | SurfaceKind::OffsetSurface(_) => return Ok(false),
     };
 
     let mut gap = Extent2d::new();

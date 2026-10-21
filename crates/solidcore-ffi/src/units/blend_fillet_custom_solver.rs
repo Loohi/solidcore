@@ -8,10 +8,11 @@
 //! (`SmBSplineCurve(gw_CURVE*, 3, FALSE)`). A surface is `n m p q r s`, `(n+1)(m+1)`
 //! control points `x y z w` (v index fastest), `r+1` u knots, `s+1` v knots
 //! (`SmBSplineSurface(gw_SURFACE*, FALSE, NULL)`). A solver block is `same_base`, surface
-//! A, surface B (absent when `same_base`), `r0 r1 o0 o1 angle ext`: the solver's rail 0
-//! offsets A by `r0 * o0`, rail 1 offsets B (or A) by `r1 * o1`, the radii are
+//! A, surface B (absent when `same_base`), `r0 r1 o0 o1 angle ext sing`: the solver's
+//! rail 0 offsets A by `r0 * o0`, rail 1 offsets B (or A) by `r1 * o1`, the radii are
 //! `m_dFilletRadii`, the orientations `m_dOrientations`, `angle` is the tower or secant
-//! angle and `ext` `m_dSurfaceExtensionFactor`; its edge uses are `NULL`. A surface
+//! angle, `ext` `m_dSurfaceExtensionFactor` and `sing` (`0..=16`) the offset surfaces'
+//! `lSingularities` (`16` = `SM_SS_UNKNOWN`, the default); its edge uses are `NULL`. A surface
 //! selector is `0` `NULL`, `1` `GetSurface(0)`, `2` `GetSurface(1)`, `3` another offset
 //! surface of A, `4` an offset surface of a copy of A.
 //!
@@ -50,6 +51,7 @@
 //! surfaces. Predicting that needs the skinning itself, so such inputs are not rejected
 //! (the difftest case `gen0137` is one).
 
+use crate::validate::{bad, NOW, NOZ};
 use crate::{call_with_buffer, FfiError};
 
 /// Largest control point index accepted by [`eval`].
@@ -64,11 +66,6 @@ pub const MAX_ARRAY: usize = 32;
 /// Largest `|crX|` entry accepted by [`eval`] (offset surfaces extend their base
 /// surface to reach it).
 pub const MAX_PARAM: f64 = 1.0e6;
-/// `NL_NOZ`.
-const NOZ: f64 = f64::MAX;
-/// `NL_NOW`.
-const NOW: f64 = -f64::MAX;
-
 /// The upstream routine run by the shim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -109,27 +106,9 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
-
-/// Sequential reader over the input.
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
+crate::reader::unit_reader!();
 
 impl Reader<'_> {
-    fn num(&mut self) -> Result<f64, FfiError> {
-        let v = self
-            .input
-            .get(self.at)
-            .copied()
-            .ok_or_else(|| bad("input too short"))?;
-        self.at += 1;
-        Ok(v)
-    }
-
     fn finite(&mut self) -> Result<f64, FfiError> {
         let v = self.num()?;
         if !v.is_finite() {
@@ -140,25 +119,6 @@ impl Reader<'_> {
 
     fn finites(&mut self, k: usize) -> Result<Vec<f64>, FfiError> {
         (0..k).map(|_| self.finite()).collect()
-    }
-
-    fn index(&mut self, max: usize) -> Result<usize, FfiError> {
-        let v = self.num()?;
-        if v.fract() != 0.0 || v < 0.0 || v > max as f64 {
-            return Err(bad(format!("bad index/count {v}")));
-        }
-        Ok(v as usize)
-    }
-
-    fn flag(&mut self) -> Result<bool, FfiError> {
-        Ok(self.index(1)? == 1)
-    }
-
-    fn done(&self) -> Result<(), FfiError> {
-        if self.at != self.input.len() {
-            return Err(bad("trailing input"));
-        }
-        Ok(())
     }
 }
 
@@ -317,6 +277,8 @@ fn solver(rd: &mut Reader<'_>) -> Result<bool, FfiError> {
         surface(rd)?;
     }
     rd.finites(6)?;
+    // lSingularities: SM_SS_NONE, an or of SM_SS_UMIN..SM_SS_VMAX, or SM_SS_UNKNOWN
+    rd.index(16)?;
     Ok(same)
 }
 
@@ -406,7 +368,7 @@ fn validate_init(rd: &mut Reader<'_>) -> Result<(), FfiError> {
 }
 
 fn validate(op: Op, input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     match op {
         Op::Create => validate_create(&mut rd)?,
         Op::JacEiffel | Op::JacSecant => validate_jac(&mut rd)?,

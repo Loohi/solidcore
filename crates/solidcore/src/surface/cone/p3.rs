@@ -12,6 +12,8 @@
 //! Deviations: output arrays are returned together and always requested; unused
 //! edge/angle arguments of the analytic routines are omitted. Ignored statuses
 //! propagate Unported; errors which would leave an uninitialised output propagate.
+//! A default `SmPoint2d` is `SM_UNDEF_DOUBLE`, not uninitialised, so an ignored
+//! `ConvertUVFromSTEPToNURBS` failure keeps the converter-written U and that V.
 //! The general intersection is supplied as a callback until `SurfaceKind` can hold
 //! cones (without erasing their virtual methods). It receives every original
 //! argument. Sphere dispatch awaits the sphere type. Bounding boxes are those of
@@ -38,9 +40,10 @@ use crate::geom::geom_utility::p1::{
 };
 use crate::geom::geom_utility::p2::segment_segment_intersect;
 use crate::geom::tol::{approx_tol3d, are_same_to_tol, is_zero};
+use crate::geom::vector2d::Point2;
 use crate::geom::vector3d::{sqrt, Point3, Vec3};
 use crate::kernel::Kernel;
-use crate::math::{max2, min2, EFF_ZERO, EFF_ZERO_SQRT, PI};
+use crate::math::{max2, min2, EFF_ZERO, EFF_ZERO_SQRT, PI, UNDEF_DOUBLE};
 use crate::nurbs::b_spline_curve::BSplineCurve;
 use crate::nurbs::b_spline_surface::{BoundingBoxRequest, LocationType};
 use crate::surface::plane::Plane;
@@ -188,15 +191,20 @@ fn bbox(cone: &Cone, domain: &Extent2d) -> Result<Extent3d> {
 fn angle_in_sweep(cone: &Cone, axis: Vec3, direction: Vec3, tol: f64) -> Result<bool> {
     let angle = axis.ccw_angle_between(cone.rev().position().x_axis(), direction)?;
     let sweep = cone.rev().step_uv_domain().u_interval();
+    // Snap and compare against the raw start/end angles (`dStartAng`/`dEndAng`), as
+    // upstream does; only the periodic mapping uses the normalised sweep
+    // (`sSweepIvl`), so a reversed angle range matches the C++ (no curve).
+    let start = cone.rev().start_angle_deg();
+    let end = cone.rev().end_angle_deg();
     let mut deg = sweep
         .contains_periodic_value(angle * 180.0 / PI, 360.0, 0.0)
         .periodic_value;
-    if are_same_to_tol(deg, sweep.min(), tol) {
-        deg = sweep.min();
-    } else if are_same_to_tol(deg, sweep.max(), tol) {
-        deg = sweep.max();
+    if are_same_to_tol(deg, start, tol) {
+        deg = start;
+    } else if are_same_to_tol(deg, end, tol) {
+        deg = end;
     }
-    Ok(deg >= sweep.min() && deg <= sweep.max())
+    Ok(deg >= start && deg <= end)
 }
 
 fn add_plane_line(
@@ -235,25 +243,33 @@ fn add_plane_ellipses(out: &mut SurfaceIntersection, curves: Vec<Curve>) -> Resu
     Ok(())
 }
 
-// Owned by the unfinished surface.cone_p2 claim. Keep the call in one place so
-// its porter can wire it without changing either intersection algorithm.
+/// `sm_GetEllipseTrimIntervals` ([`super::p2::ellipse_trim_intervals`]) with the
+/// ellipse's angular interval.
 fn ellipse_trim_intervals(
-    _k: &Kernel,
-    _center: Point3,
-    _x: Vec3,
-    _y: Vec3,
-    _rx: f64,
-    _ry: f64,
-    _angles: Extent1d,
-    _cone: &Cone,
-    _domain: &Extent2d,
-    _tol: f64,
+    k: &Kernel,
+    center: Point3,
+    x: Vec3,
+    y: Vec3,
+    rx: f64,
+    ry: f64,
+    angles: Extent1d,
+    cone: &Cone,
+    domain: &Extent2d,
+    tol: f64,
 ) -> Result<Vec<Extent1d>> {
-    // UNPORTED(surface.cone_p2): sm_GetEllipseTrimIntervals
-    Err(SolidError::unported(
-        "sm_GetEllipseTrimIntervals",
-        "surface.cone_p2",
-    ))
+    super::p2::ellipse_trim_intervals(
+        k,
+        center,
+        x,
+        y,
+        rx,
+        ry,
+        angles.min(),
+        angles.max(),
+        cone,
+        domain,
+        tol,
+    )
 }
 
 impl Cone {
@@ -617,8 +633,9 @@ impl Cone {
                 {
                     continue;
                 }
-                let uv = self.convert_uv_from_step_to_nurbs(k, inv.uv)?;
-                let other_uv = other.convert_uv_from_step_to_nurbs(k, other_inv.uv)?;
+                // (both statuses ignored upstream)
+                let uv = nurbs_uv_status_ignored(self, k, inv.uv)?;
+                let other_uv = nurbs_uv_status_ignored(other, k, other_inv.uv)?;
                 if !domain.contains_point(uv, EFF_ZERO)
                     || !other_domain.contains_point(other_uv, EFF_ZERO)
                 {
@@ -742,6 +759,27 @@ fn intersection_inversion(
             ..
         }) => Ok(None),
         Err(e) => Err(e),
+    }
+}
+
+/// `ConvertUVFromSTEPToNURBS(StepUV, NurbUV)` with its status ignored
+/// (`SmCone.cpp:2966-2967`). `NurbUV` is a default `SmPoint2d`, both coordinates
+/// `SM_UNDEF_DOUBLE`. A failed polar conversion returns before the height is
+/// converted, so `x` holds what the converter had written (`SM_UNDEF_DOUBLE` when
+/// nothing) and `y` stays `SM_UNDEF_DOUBLE`; the caller's domain test then decides.
+/// Unported and a missing polar curve (a `NULL` dereference upstream) propagate.
+fn nurbs_uv_status_ignored(cone: &Cone, k: &Kernel, step_uv: Point2) -> Result<Point2> {
+    match cone.convert_uv_from_step_to_nurbs(k, step_uv) {
+        Ok(uv) => Ok(uv),
+        Err(e) if e.is_unported() => Err(e),
+        Err(e) => {
+            let circle = cone.rev().polar_curve.as_ref().ok_or(e)?;
+            let x = cone
+                .rev()
+                .polar
+                .convert_to_nurbs_parameter_or_written(circle, step_uv.x, 0.0)?;
+            Ok(Point2::new(x.unwrap_or(UNDEF_DOUBLE), UNDEF_DOUBLE))
+        }
     }
 }
 

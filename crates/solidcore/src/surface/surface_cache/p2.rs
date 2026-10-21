@@ -466,11 +466,15 @@ impl<O: Copy + PartialEq> SurfaceCache<O> {
         let chord_tol = opts.chord_height_tolerance;
         let chord_height_squared = chord_tol * chord_tol;
         let ang_tol_deg = opts.ang_tol_rad * 180.0 / PI;
-        let zone_tol = if self.surface().owner().is_some() {
-            // UNPORTED(topology.brep_p1): SmTol::GetZoneTol3d(const SmObject*)
+        // SmTol::GetZoneTol3d(m_cpSurface): GetFace() ? its tolerance : the system's
+        let zone_tol = if self.surface().face()?.is_some() {
+            // UNPORTED(geom.tol): SmTol::GetZoneTol3d(const SmObject*) on an opaque handle. Every
+            // arm it dispatches to is ported (topology::{vertex, edge, face::p2, edgeuse::p1}::tolerance,
+            // Brep::tolerance) but each takes `&Brep` and none is in scope here; wire once this code
+            // receives the owning B-rep
             return Err(SolidError::unported(
                 "SmTol::GetZoneTol3d(const SmObject*)",
-                "topology.brep_p1",
+                "geom.tol",
             ));
         } else {
             zone_tol_3d(k, SmallTopoType::NormalSize)
@@ -545,9 +549,10 @@ impl<O: Copy + PartialEq> SurfaceCache<O> {
             SurfaceKind::BSpline(_) | SurfaceKind::Plane(_) | SurfaceKind::SurfOfRevolution(_) => {
                 None
             }
-            SurfaceKind::CurveBounded(_) | SurfaceKind::Step(_) | SurfaceKind::SrfInVolume(_) => {
-                Some(&cache_surface)
-            }
+            SurfaceKind::CurveBounded(_)
+            | SurfaceKind::Step(_)
+            | SurfaceKind::OffsetSurface(_)
+            | SurfaceKind::SrfInVolume(_) => Some(&cache_surface),
         };
 
         let mut subdivide = false;
@@ -925,6 +930,7 @@ impl<O: Copy + PartialEq> SurfaceCache<O> {
                     SurfaceKind::SurfOfRevolution(s) => s.base().copy_sub_patch(&node_uv),
                     SurfaceKind::CurveBounded(_)
                     | SurfaceKind::Step(_)
+                    | SurfaceKind::OffsetSurface(_)
                     | SurfaceKind::SrfInVolume(_) => {
                         return Err(invalid(OP_BLOCK, "node surface is not a B-spline"))
                     }

@@ -26,6 +26,7 @@
 //! (degrees past the `NL_PascalTri` table, index ranges past the output buffers,
 //! too-short control point arrays, out-of-range flags).
 
+use crate::validate::bad;
 use crate::{call_with_buffer, FfiError};
 
 /// Largest `p + t` / `p + q` accepted where upstream reads `NL_PascalTri[18][18]`.
@@ -105,26 +106,9 @@ mod sys {
     }
 }
 
-fn bad(msg: impl Into<String>) -> FfiError {
-    FfiError::InvalidArgument(msg.into())
-}
-
-struct Reader<'a> {
-    input: &'a [f64],
-    at: usize,
-}
+crate::reader::unit_reader!();
 
 impl Reader<'_> {
-    fn num(&mut self) -> Result<f64, FfiError> {
-        let v = self
-            .input
-            .get(self.at)
-            .copied()
-            .ok_or_else(|| bad("input too short"))?;
-        self.at += 1;
-        Ok(v)
-    }
-
     fn index(&mut self, max: usize) -> Result<usize, FfiError> {
         let v = self.num()?;
         if v.fract() != 0.0 || v < 0.0 || v > max as f64 {
@@ -141,24 +125,8 @@ impl Reader<'_> {
         Ok(v)
     }
 
-    fn skip(&mut self, k: usize) -> Result<(), FfiError> {
-        let end = self.at.checked_add(k).ok_or_else(|| bad("overflow"))?;
-        if end > self.input.len() {
-            return Err(bad("input too short"));
-        }
-        self.at = end;
-        Ok(())
-    }
-
     fn cpts(&mut self, k: usize) -> Result<(), FfiError> {
         self.skip(4 * k)
-    }
-
-    fn done(&self) -> Result<(), FfiError> {
-        if self.at != self.input.len() {
-            return Err(bad("trailing input"));
-        }
-        Ok(())
     }
 }
 
@@ -170,7 +138,7 @@ fn pascal(sum: usize) -> Result<(), FfiError> {
 }
 
 fn validate(op: Op, input: &[f64]) -> Result<(), FfiError> {
-    let mut rd = Reader { input, at: 0 };
+    let mut rd = Reader::new(input);
     match op {
         Op::ElevMatrix | Op::ProdMatrix => {
             let p = rd.index(MAX_PASCAL)?;

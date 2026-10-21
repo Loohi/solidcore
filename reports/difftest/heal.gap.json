@@ -115,8 +115,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
+        "symbol": "SmSurface::DropCurve",
+        "unit": "intersect.surface_drop_lib_p3"
       },
       "max_rel_err": 0.0,
       "name": "topo_rectangle_kind1",
@@ -143,8 +143,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
+        "symbol": "SmSurface::DropCurve",
+        "unit": "intersect.surface_drop_lib_p3"
       },
       "max_rel_err": 0.0,
       "name": "topo_rectangle_kind4",
@@ -443,8 +443,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0009",
@@ -518,21 +518,17 @@
       "values_compared": 32
     },
     {
-      "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
-      },
       "max_rel_err": 0.0,
       "name": "gen0018",
-      "outcome": "deferred",
-      "pass": false,
+      "outcome": "pass",
+      "pass": true,
       "source": "generated:seed=6223471294032734339",
-      "values_compared": 0
+      "values_compared": 24
     },
     {
       "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
+        "symbol": "SmSurface::DropCurve",
+        "unit": "intersect.surface_drop_lib_p3"
       },
       "max_rel_err": 0.0,
       "name": "gen0019",
@@ -543,8 +539,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
+        "symbol": "SmSurface::DropCurve",
+        "unit": "intersect.surface_drop_lib_p3"
       },
       "max_rel_err": 0.0,
       "name": "gen0020",
@@ -627,8 +623,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0030",
@@ -974,16 +970,12 @@
       "values_compared": 92
     },
     {
-      "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
-      },
       "max_rel_err": 0.0,
       "name": "gen0073",
-      "outcome": "deferred",
-      "pass": false,
+      "outcome": "pass",
+      "pass": true,
       "source": "generated:seed=6223471294032734394",
-      "values_compared": 0
+      "values_compared": 24
     },
     {
       "max_rel_err": 0.0,
@@ -995,8 +987,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0075",
@@ -1342,16 +1334,12 @@
       "values_compared": 156
     },
     {
-      "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
-      },
       "max_rel_err": 0.0,
       "name": "gen0118",
-      "outcome": "deferred",
-      "pass": false,
+      "outcome": "pass",
+      "pass": true,
       "source": "generated:seed=6223471294032734439",
-      "values_compared": 0
+      "values_compared": 24
     },
     {
       "max_rel_err": 0.0,
@@ -1363,8 +1351,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0120",
@@ -1407,8 +1395,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
+        "symbol": "SmSurface::DropCurve",
+        "unit": "intersect.surface_drop_lib_p3"
       },
       "max_rel_err": 0.0,
       "name": "gen0125",
@@ -1619,8 +1607,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0151",
@@ -1647,8 +1635,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0154",
@@ -1819,8 +1807,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0175",
@@ -2071,8 +2059,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0206",
@@ -2282,16 +2270,12 @@
       "values_compared": 156
     },
     {
-      "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
-      },
       "max_rel_err": 0.0,
       "name": "gen0232",
-      "outcome": "deferred",
-      "pass": false,
+      "outcome": "pass",
+      "pass": true,
       "source": "generated:seed=6223471294032734553",
-      "values_compared": 0
+      "values_compared": 24
     },
     {
       "max_rel_err": 0.0,
@@ -2423,8 +2407,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
+        "symbol": "SmSurface::DropCurve",
+        "unit": "intersect.surface_drop_lib_p3"
       },
       "max_rel_err": 0.0,
       "name": "gen0249",
@@ -2459,8 +2443,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0253",
@@ -2503,8 +2487,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0258",
@@ -2714,16 +2698,12 @@
       "values_compared": 92
     },
     {
-      "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
-      },
       "max_rel_err": 0.0,
       "name": "gen0284",
-      "outcome": "deferred",
-      "pass": false,
+      "outcome": "pass",
+      "pass": true,
       "source": "generated:seed=6223471294032734605",
-      "values_compared": 0
+      "values_compared": 24
     },
     {
       "max_rel_err": 0.0,
@@ -2783,8 +2763,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0292",
@@ -2811,8 +2791,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0295",
@@ -2879,8 +2859,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
+        "symbol": "SmSurface::DropCurve",
+        "unit": "intersect.surface_drop_lib_p3"
       },
       "max_rel_err": 0.0,
       "name": "gen0303",
@@ -2891,8 +2871,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0304",
@@ -3118,16 +3098,12 @@
       "values_compared": 348
     },
     {
-      "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
-      },
       "max_rel_err": 0.0,
       "name": "gen0332",
-      "outcome": "deferred",
-      "pass": false,
+      "outcome": "pass",
+      "pass": true,
       "source": "generated:seed=6223471294032734653",
-      "values_compared": 0
+      "values_compared": 24
     },
     {
       "max_rel_err": 0.0,
@@ -3195,8 +3171,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0341",
@@ -3351,8 +3327,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0360",
@@ -3491,8 +3467,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmEdgeuse::GetOrCreateUVTrimCurve",
-        "unit": "topology.edgeuse_p3"
+        "symbol": "SmSurface::DropCurve",
+        "unit": "intersect.surface_drop_lib_p3"
       },
       "max_rel_err": 0.0,
       "name": "gen0377",
@@ -3503,8 +3479,8 @@
     },
     {
       "deferred": {
-        "symbol": "SmCurveClassification::SmCurveClassification",
-        "unit": "intersect.curve_class_p4"
+        "symbol": "SmCurveClassification::ReSet",
+        "unit": "intersect.curve_class_p2"
       },
       "max_rel_err": 0.0,
       "name": "gen0378",
@@ -3683,13 +3659,13 @@
     }
   ],
   "cases_both_errored": 0,
-  "cases_deferred": 30,
+  "cases_deferred": 24,
   "cases_failed": 0,
-  "cases_passed": 415,
+  "cases_passed": 421,
   "cases_total": 445,
   "deferred_by_unit": {
-    "intersect.curve_class_p4": 16,
-    "topology.edgeuse_p3": 14
+    "intersect.curve_class_p2": 16,
+    "intersect.surface_drop_lib_p3": 8
   },
   "max_rel_err": 0.0,
   "pass": true,
